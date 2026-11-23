@@ -208,22 +208,35 @@ def test_streamed_shards_commit_before_deleting_and_resume(tmp_path,monkeypatch)
     assert [r['source_row'] for r in records]==list(range(6))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(),reason='Requires an actual CUDA GPU; run this test on the Colab T4.')
-def test_cuda_fp16_training_and_cpu_studio_export(tmp_path):
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='Requires an actual CUDA GPU; run this test in the Colab GPU notebook.')
+@pytest.mark.parametrize('allow_tf32',[False,True])
+def test_cuda_fp16_training_and_cpu_studio_export(tmp_path,allow_tf32):
     store=Store(tmp_path/'metadata.sqlite3')
     trainer=Trainer(DatasetManager(tmp_path/'data'),store,tmp_path/'checkpoints','cuda')
     try:
-        trainer.create({'model':SMALL,'tokenizer':'magic8k','precision':'float16','datasets':[{'name':'starter-sample.txt','weight':100}]})
-        trainer.start({'precision':'float16','max_steps':2,'batch_size':2,'eval_interval':2})
+        trainer.create({'model':SMALL,'tokenizer':'magic8k','precision':'float16','allow_tf32':allow_tf32,'datasets':[{'name':'starter-sample.txt','weight':100}]})
+        trainer.start({'precision':'float16','allow_tf32':allow_tf32,'max_steps':2,'batch_size':2,'eval_interval':2})
         trainer.thread.join(60)
         assert trainer.state=='completed',trainer.error
         assert trainer.amp_enabled and trainer.precision=='float16'
+        assert trainer.allow_tf32==(allow_tf32 and torch.cuda.get_device_capability()[0]>=8)
+        assert torch.backends.cuda.matmul.allow_tf32==trainer.allow_tf32
         payload=torch.load(trainer.checkpoint_path(trainer.checkpoint),map_location='cpu',weights_only=True)
         assert payload['scaler_state_dict']
         assert all(t.device.type=='cpu' and t.dtype==torch.float32 for t in payload['model_state_dict'].values())
         from backend.checkpoints import register_checkpoint
         registered=register_checkpoint(trainer.checkpoint_path(trainer.checkpoint),tmp_path/'studio-checkpoints')
         assert registered['step']==2
+        local=Trainer(DatasetManager(tmp_path/'local-data'),store,tmp_path/'studio-checkpoints','cpu')
+        try:
+            local.load(registered['name'])
+            assert local.precision=='float32' and not local.allow_tf32
+            assert len(local.generate(prompt='Hello',max_new_tokens=2,telemetry=False)['tokens'])==2
+            local.start({'precision':'auto','max_steps':1,'batch_size':1,'eval_interval':1})
+            local.thread.join(60)
+            assert local.state=='completed',local.error
+            assert local.step==3
+        finally:local.shutdown()
     finally:trainer.shutdown();store.close()
 
 

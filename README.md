@@ -123,6 +123,12 @@ Import [the Kaggle TPU notebook](notebooks/NanoForge_Kaggle_TPU.ipynb) into Kagg
 
 This is data parallel training: each core holds a full model; core memories are not pooled. The separate `python -m backend.train_xla` CLI supports pretraining, SFT and DPO. The local Studio server remains on CPU/CUDA/MPS/XPU. See [Kaggle setup, resume and memory details](docs/kaggle-tpu.md). Actual TPU kernels require the notebook's hardware test; development checks here run on CPU.
 
+## Colab L4 GPU
+
+[Open the one-cell L4 notebook](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_L4.ipynb). Select **L4 GPU** in Colab and run its code cell. It preserves Colab's CUDA PyTorch, verifies the actual GPU, runs CUDA training/Studio-export smoke tests, imports Dolly, prepares uint16 tokens, trains and downloads the `.pt`.
+
+`configs/colab-l4.json` uses Mini, FP16 + GradScaler, context 512, batch 32, accumulation 2 and TF32 for supported FP32 CUDA operations. Custom models remain below one billion parameters, with batch size reduced to fit GPU memory. Outputs retain the Studio's portable CPU FP32 checkpoint format. See [L4 settings, resume and copy-paste startup details](docs/colab-l4.md). Actual L4 performance is subject to the notebook's hardware test.
+
 ## Colab Tesla T4
 
 [Open the T4 notebook in Colab](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_T4.ipynb)

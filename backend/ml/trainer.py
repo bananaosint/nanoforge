@@ -36,6 +36,7 @@ class Trainer:
         self.model = self.tokenizer = self.optimizer = None
         self.amp_enabled = False
         self.precision = 'float32'
+        self.allow_tf32 = False
         self.scaler = None
         self.overflow_retries = 0
         self.step = 0
@@ -60,6 +61,11 @@ class Trainer:
         cuda = str(self.device).split(':')[0] == 'cuda'
         if requested == 'float16' and not cuda:
             raise ValueError('FP16 training requires CUDA. Use auto or float32 on CPU/MPS/XPU.')
+        self.allow_tf32 = bool(cuda and config.get('allow_tf32',False)
+                               and torch.cuda.get_device_capability(self.device)[0] >= 8)
+        if cuda:
+            torch.backends.cuda.matmul.allow_tf32 = self.allow_tf32
+            torch.backends.cudnn.allow_tf32 = self.allow_tf32
         enabled = cuda and requested != 'float32'
         if self.scaler is None or enabled != self.amp_enabled:
             self.scaler = torch.amp.GradScaler('cuda',enabled=enabled,init_scale=1024.0)
@@ -429,7 +435,7 @@ class Trainer:
             return {}
 
     def status(self):
-        return {'imported_pairs': self.imported_pairs(), 'state': self.state, 'device': self.device, 'device_name': device_name(self.device), 'precision':self.precision, 'step': self.step, 'target_step': self.target_step, 'mode': self.mode,
+        return {'imported_pairs': self.imported_pairs(), 'state': self.state, 'device': self.device, 'device_name': device_name(self.device), 'precision':self.precision, 'allow_tf32':self.allow_tf32, 'step': self.step, 'target_step': self.target_step, 'mode': self.mode,
                 'run_id': self.run_id, 'checkpoint': self.checkpoint, 'error': self.error, 'val_loss': self.val_loss,
                 'parameters': sum(p.numel() for p in self.model.parameters()) if self.model else 0,
                 'model_config': asdict(self.model.config) if self.model else None, 'config': self.config,

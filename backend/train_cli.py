@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--home',type=Path,default=Path(os.environ.get('NANOFORGE_HOME',Path(__file__).resolve().parents[1])))
     parser.add_argument('--device',choices=['auto','cpu','cuda','mps','xpu'],default='auto')
     parser.add_argument('--resume',type=Path,help='A full NanoForge .pt checkpoint; steps are additional steps after this checkpoint.')
+    parser.add_argument('--preview',action='store_true',help='Print exact model size without allocating model tensors or training.')
     args=parser.parse_args()
     os.environ['NANOFORGE_DEVICE']=args.device
     args.home.mkdir(parents=True,exist_ok=True)
@@ -24,6 +25,10 @@ def main():
     trainer=None
     try:
         trainer=Trainer(DatasetManager(args.home/'data'),store,args.home/'checkpoints')
+        if args.preview:
+            if args.resume:parser.error('--preview sizes a new model; omit --resume.')
+            print(json.dumps(trainer.preview_model(config)),flush=True)
+            return
         if args.resume:
             metadata=register_checkpoint(args.resume,trainer.directory)
             trainer.load(metadata['name'])
@@ -41,11 +46,17 @@ def main():
             trainer.thread.join(1)
         if trainer.state=='error':
             raise RuntimeError(trainer.error)
-        print(json.dumps({'state':trainer.state,'step':trainer.step,'checkpoint':str(trainer.directory/trainer.checkpoint),'metadata':str((trainer.directory/trainer.checkpoint).with_suffix('.json'))}),flush=True)
+        result={'state':trainer.state,'step':trainer.step,'checkpoint':str(trainer.directory/trainer.checkpoint),
+                'metadata':str((trainer.directory/trainer.checkpoint).with_suffix('.json'))}
+        manifest=args.home/'latest-checkpoint.json'
+        pending=manifest.with_suffix('.json.pending')
+        pending.write_text(json.dumps(result),encoding='utf-8');pending.replace(manifest)
+        print(json.dumps(result),flush=True)
     except KeyboardInterrupt:
         if trainer:
             trainer.shutdown()
             print('Stopped safely; the final checkpoint was saved.',flush=True)
+        raise SystemExit(130)
     finally:
         if trainer:trainer.shutdown()
         store.close()
