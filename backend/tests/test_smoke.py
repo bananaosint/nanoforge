@@ -145,7 +145,8 @@ def test_dataset_split_and_offline_fallback(tmp_path, monkeypatch):
         WeightedMixer([('a',100)],tokenizer,32,'cpu')
 
 
-def test_api_endpoints(tmp_path):
+def test_api_endpoints(tmp_path,monkeypatch):
+    monkeypatch.setenv('NANOFORGE_DEVICE','cpu')
     app=create_app(tmp_path)
     with TestClient(app) as client:
         assert client.get('/api/health').json()['device']=='cpu'

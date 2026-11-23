@@ -54,21 +54,27 @@ class FileCorpus:
     def tokens(self, tokenizer):
         stat = self.path.stat()
         identity = json.dumps([str(self.path.resolve()), stat.st_size, stat.st_mtime_ns, tokenizer.state()], sort_keys=True)
-        key = hashlib.sha256(identity.encode()).hexdigest()
+        use_u16 = tokenizer.vocab_size <= 65536
+        dtype = np.uint16 if use_u16 else np.uint32
+        suffix = '.u16' if use_u16 else '.u32'
+        key = hashlib.sha256(('packed-v2:' + identity).encode()).hexdigest()
         directory = self.path.parent / '.tokens'
         directory.mkdir(exist_ok=True)
-        path = directory / (key + '.u32')
+        path = directory / (key + suffix)
         if not path.exists():
             temporary = path.with_suffix('.partial')
             with temporary.open('wb') as output:
                 for chunk in self.chunks():
                     # BPE is encoded in bounded chunks. Boundaries may split a merge,
                     # but no text is dropped and character tokenization stays exact.
-                    array('I', tokenizer.encode(chunk)).tofile(output)
+                    ids = tokenizer.encode(chunk)
+                    if ids and (min(ids) < 0 or max(ids) >= tokenizer.vocab_size):
+                        raise ValueError('Tokenizer produced an ID outside its vocabulary.')
+                    array('H' if use_u16 else 'I', ids).tofile(output)
             temporary.replace(path)
         if path.stat().st_size == 0:
             raise ValueError(f'Dataset {self.path.name} is empty.')
-        return np.memmap(path, dtype=np.uint32, mode='r')
+        return np.memmap(path, dtype=dtype, mode='r')
 
 
 def vocabulary_text(sources):

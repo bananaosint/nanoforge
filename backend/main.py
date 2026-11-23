@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -13,6 +14,7 @@ from .ml.corpus import FileCorpus
 from .ml.model import PRESETS, device_name
 from .ml.trainer import Trainer
 from .storage import Store
+from .checkpoints import register_checkpoint
 from .importers.hub import HubImports
 from .api.schemas import HubImportRequest
 
@@ -90,7 +92,7 @@ def create_app(root=None):
 
     @app.post('/api/imports/start')
     def import_start(body: HubImportRequest):
-        return imports.start(body.dataset_id, body.max_records)
+        return imports.start(body.dataset_ids if body.dataset_ids is not None else body.dataset_id, body.max_records)
 
     @app.post('/api/imports/pause')
     def import_pause():
@@ -146,6 +148,27 @@ def create_app(root=None):
     @app.get('/api/checkpoints')
     def checkpoints():
         return trainer.checkpoints()
+
+    @app.post('/api/checkpoints/upload')
+    async def upload_checkpoint(file: UploadFile = File(...)):
+        name=file.filename or ''
+        if Path(name).name!=name or '\\' in name or not name.endswith('.pt') or name.startswith('.'):
+            raise ValueError('Upload a .pt checkpoint filename.')
+        if (trainer.directory/name).exists():
+            raise ValueError('A checkpoint with that filename already exists. Rename the upload first.')
+        handle,pending=tempfile.mkstemp(prefix='.upload-',suffix='.pt',dir=trainer.directory)
+        os.close(handle)
+        try:
+            size=0
+            with open(pending,'wb') as target:
+                while chunk:=await file.read(1024*1024):
+                    size+=len(chunk)
+                    if size>2*1024*1024*1024:
+                        raise ValueError('Checkpoint uploads must be smaller than 2 GiB.')
+                    target.write(chunk)
+            return await asyncio.to_thread(register_checkpoint,pending,trainer.directory,name)
+        finally:
+            Path(pending).unlink(missing_ok=True)
 
     @app.post('/api/checkpoints/save')
     def save_checkpoint():

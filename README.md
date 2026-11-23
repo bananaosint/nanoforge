@@ -74,9 +74,9 @@ export PIP_NO_CACHE_DIR=1
 
 These commands do not delete your data, checkpoints, feedback, or existing environment. An interrupted installation can usually be retried. The `.venv/install-tmp` directory holds only installation temporary files. `NANOFORGE_SETUP_ONLY=1 ./start.sh` installs/checks dependencies without starting either server.
 
-## Import the five Hugging Face datasets
+## Direct Hugging Face dataset imports
 
-Start the updated app and open **Data & Mixer → Direct dataset imports**. Click **Import all five**, or import sources individually. Files download directly onto the machine running the backend, bypassing the browser's 20 MB upload limit. Completed sources appear in the mixer at 0%: move their weight sliders to select them. A download in this chat's cloud workspace does not modify your own WSL installation.
+Start the updated app and open **Data & Mixer → Direct dataset imports**. Select source checkboxes and click **Import selected**, or use an individual card’s **Import full** / **Sample 1,000** buttons. The catalog contains 16 requested sources; see `docs/datasets.md` for the full source/configuration table. Cosmopedia v2 and English Wikipedia start unselected because of their size, and the supplied DailyDialog ID reports its access issue. Files download directly onto the machine running the backend, bypassing the browser's 20 MB upload limit. Completed sources appear in the mixer at 0%: move their weight sliders to select them. A download in this chat's cloud workspace does not modify your own WSL installation.
 
 | Source | Imported material | Approximate download |
 | --- | --- | --- |
@@ -89,17 +89,17 @@ Start the updated app and open **Data & Mixer → Direct dataset imports**. Clic
 
 These are original **train** splits. Original test/validation splits are not mixed into training. NanoForge makes its own internal 90/10 split after normalization. Dataset source links, licensing labels, source revision, converted Parquet revision, and download URLs are recorded under `data/.imports/jobs.json`. No Robots is licensed **CC BY-NC 4.0**; preserve source attribution and its noncommercial restriction. The UI links every dataset card for full terms.
 
-**Pause imports** saves progress. Resume with the same dataset button after restarting. Interrupted downloads use HTTP range requests when supported. Normalization uses row checkpoints and truncates uncommitted output on resume, preventing duplicate records. Incomplete output stays hidden under `data/.imports/`; the mixer sees only finalized files. Standard imports stream through Arrow batches and release intermediate Parquet files after conversion. Converted files can still take several GB. Allow additional disk space for token caches: character token caches use approximately four bytes per character, and BPE caches use four bytes per token. Your WSL project filesystem has much more room than the small `/tmp`; imports write to the project filesystem.
+**Pause imports** saves progress. Resume with the same dataset button after restarting. Interrupted downloads use HTTP range requests when supported. Normalization uses row checkpoints and truncates uncommitted output on resume, preventing duplicate records. Incomplete output stays hidden under `data/.imports/`; the mixer sees only finalized files. Standard imports stream through Arrow batches and release intermediate Parquet files after conversion. Converted files can still take several GB. Allow additional disk space for token caches: token caches use two bytes per token when the vocabulary fits uint16 (including Magic 8k and GPT-2 BPE), with uint32 fallback for larger vocabularies. Your WSL project filesystem has much more room than the small `/tmp`; imports write to the project filesystem.
 
 For pretraining, only the chosen HH-RLHF completion is used as text; rejected completions remain available as preference targets. SFT/DPO also read imported JSONL pairs directly from positively weighted sources in the mixer, alongside your saved human feedback. They use disk indexes rather than copying millions of pairs into the HITL feedback table. Collected human edits remain independently editable/exportable in the feedback library. Select the imported source in the mixer before using **Train on feedback**.
 
 ### Chinese dataset skipped
 
-Chinese R1 Distill is excluded from the UI catalog and **Import all five**, as requested. Normal setup installs no translation dependencies and downloads no translation model. Optional experimental translation code is documented separately in `docs/optional-translation.md` and does not run automatically.
+Chinese R1 Distill is excluded from the UI catalog and the normal import selection, as requested. Normal setup installs no translation dependencies and downloads no translation model. Optional experimental translation code is documented separately in `docs/optional-translation.md` and does not run automatically.
 
 ### Large-corpus training
 
-File-backed corpora now scan their vocabulary incrementally and tokenize into reusable `data/.tokens/*.u32` memory-mapped caches. Training samples only the requested windows into RAM. Raw `.txt` and normalized `.jsonl` corpora no longer need to fit entirely in memory. Initial vocabulary/token preparation can take minutes; subsequent runs with the same source/tokenizer reuse the cache. BPE encoding happens in bounded chunks; a merge can differ at a chunk boundary, but no characters are dropped. Importing a dataset does not automatically change an existing checkpoint's vocabulary: with a character tokenizer, choose the complete mix **before creating a new experiment**, or use BPE for a fixed broad vocabulary.
+File-backed corpora now scan their vocabulary incrementally and tokenize into reusable `data/.tokens/*.u16` (or `.u32` for large vocabularies) memory-mapped caches. Training samples only the requested windows into RAM. Raw `.txt` and normalized `.jsonl` corpora no longer need to fit entirely in memory. Initial vocabulary/token preparation can take minutes; subsequent runs with the same source/tokenizer reuse the cache. BPE encoding happens in bounded chunks; a merge can differ at a chunk boundary, but no characters are dropped. Importing a dataset does not automatically change an existing checkpoint's vocabulary: with a character tokenizer, choose the complete mix **before creating a new experiment**, or use Magic 8k / GPT-2 BPE for a fixed broad vocabulary.
 
 Old caches are not automatically deleted, so deleting or replacing large datasets may leave unused files in `data/.tokens/`. With the app stopped, that directory can be removed to reclaim space; it contains reproducible caches, not checkpoints or feedback.
 
@@ -111,11 +111,19 @@ From the NanoForge root, with the updated dependencies installed:
 .venv/bin/python -m backend.importers --dataset all
 ```
 
-Or choose `tinystories`, `hh-rlhf`, `oasst1`, `no-robots`, or `goat` individually with `--dataset`. Ctrl+C pauses safely; rerun the same command to resume. Run one importer process at a time; do not run a CLI import while the app is importing into the same data directory. Advanced verification can use `--max-records 200 --home /path/to/separate/sample-home`; this produces explicitly named sample files and never claims a full import. Use a separate home for samples so the full import is not confused with a completed sample.
+Or choose `tinystories`, `hh-rlhf`, `oasst1`, `no-robots`, or `goat` individually with `--dataset`. Ctrl+C pauses safely; rerun the same command to resume. Run one importer process at a time; do not run a CLI import while the app is importing into the same data directory. Advanced verification can use `--max-records 200 --home /path/to/separate/sample-home`; this produces explicitly named sample files and never claims a full import. Completed samples can be upgraded to full imports; interrupted imports must resume with the same row limit. Sample and full files remain distinct.
 
 ### Updating an existing copy
 
 Stop NanoForge first. Extract the updated ZIP into a temporary folder, then copy its `backend/`, `frontend/`, `examples/`, `package.json`, `start.sh`, and `README.md` into your existing NanoForge folder, replacing code files. Keep your existing `.venv/`, `data/`, `checkpoints/`, and `nanoforge.sqlite3*` files. Run `./start.sh` again: it installs the additional import/translation dependencies without recreating your environment. The ZIP contains no trained checkpoints, user feedback, or full downloaded corpora.
+
+## Colab Tesla T4
+
+[Open the T4 notebook in Colab](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_T4.ipynb)
+
+Choose a T4 GPU runtime and run the notebook. `configs/colab-t4.json` uses Mini, Magic 8k, FP16 autocast + gradient scaling, fused AdamW, context 256, batch 32 and gradient accumulation 2. Pretokenization stores uint16 IDs; only sampled batches become int64 CUDA tensors. Parameters and exported checkpoint weights remain FP32 for stability and CPU compatibility.
+
+Download the notebook’s checkpoint ZIP and use **Train & Monitor → Import .pt from Colab**, or copy its `.pt` and `.json` into your local `checkpoints/` folder. The studio restores the embedded tokenizer/model/optimizer state on its own device. See `docs/colab-t4.md` for setup, resume, precision behavior and verification limits; see `docs/tokenizers.md` for the exact Magic tokenizer semantics.
 
 ## First experiment
 
@@ -133,14 +141,16 @@ backend/
   main.py                  FastAPI routes, CORS, WebSocket, shutdown lifecycle
   storage.py               SQLite feedback, settings, run history, metrics, snapshots
   api/schemas.py           Validated request contracts
-  ml/tokenizer.py          Character vocabulary or tiktoken GPT-2 BPE
+  ml/tokenizer.py          Character, GPT-2 BPE, or bundled Magic 8k BPE
   ml/model.py              Pre-norm decoder-only Transformer and sampling
   ml/dataset.py            Corpus handling, weighted batches, completion masks
   ml/corpus.py             Streaming files, memory-mapped tokens and feedback indexes
   importers/               Direct Hugging Face imports and local Chinese→English preparation
   ml/trainer.py            Background thread, CE / SFT / DPO, checkpoints
   assets/tokenizer/        Verified original GPT-2 vocabulary cache (no model weights)
-  tests/test_smoke.py       Model, trainer, lifecycle, dataset, API smoke tests
+  tests/                   Model, import, tokenizer, device, precision and API tests
+  train_cli.py             Headless training and resume (same Studio trainer)
+  pretokenize.py           Packed uint16/uint32 cache preparation
 frontend/
   src/App.tsx              Four studio workspaces
   src/types.ts             Shared UI data contracts
@@ -198,7 +208,7 @@ The API rejects malformed JSONL, empty files, duplicates, non-UTF-8 files, and u
 
 ## API surface
 
-Direct imports use `GET /api/imports`, `POST /api/imports/start` (`dataset_id`, optional `max_records=0` for full import), and `POST /api/imports/pause`.
+Direct imports use `GET /api/imports`, `POST /api/imports/start` (`dataset_id` or `dataset_ids`, optional `max_records=0` for full import), and `POST /api/imports/pause`.
 
 All REST paths below are prefixed by `/api`; `/docs` provides complete OpenAPI schemas.
 
@@ -212,7 +222,7 @@ All REST paths below are prefixed by `/api`; `/docs` provides complete OpenAPI s
 | GET / DELETE | `/datasets/{name}/preview`, `/datasets/{name}` | Preview / remove corpus |
 | POST | `/training/start`, `/training/pause`, `/training/resume`, `/training/stop` | Lifecycle; `start.mode` selects pretrain, sft, dpo |
 | GET | `/checkpoints` | Local checkpoint metadata |
-| POST | `/checkpoints/save`, `/checkpoints/select` | Save / restore weights and optimizer |
+| POST | `/checkpoints/save`, `/checkpoints/select`, `/checkpoints/upload` | Save / restore / import portable .pt weights and optimizer |
 | DELETE | `/checkpoints/{name}` | Remove an inactive checkpoint |
 | GET / PUT | `/timeline`, `/prompts` | Experiment snapshots / exactly three pinned prompts |
 | POST | `/generate`, `/arena` | Completion with optional telemetry / dual sampling |
@@ -234,10 +244,12 @@ cd frontend
 npm run build
 ```
 
-Smoke coverage: regular/manual forward agreement and causal masks; seeded generation and telemetry; both tokenizers; prompt loss masking; five pretraining steps with accumulation and checkpoint reload; two SFT and two DPO steps; parameter updates; pause/resume/stop; NaN protection; offline corpus fallback; dataset splits; FastAPI endpoints, CORS, WebSocket, feedback CRUD/export, and invalid requests.
+Smoke coverage: regular/manual forward agreement and causal masks; seeded generation and telemetry; all three tokenizers; uint16 packing and uint32 fallback; portable checkpoint upload; prompt loss masking; five pretraining steps with accumulation and checkpoint reload; two SFT and two DPO steps; parameter updates; pause/resume/stop; NaN protection; offline corpus fallback; dataset splits; FastAPI endpoints, CORS, WebSocket, feedback CRUD/export, and invalid requests.
 
-The implementation was checked with CPU PyTorch, Python 3.12, and Node 24. CUDA/MPS execution requires compatible local hardware and was not exercised in this environment. The frontend production build passes. Interactive visual browser QA was unavailable because the managed preview relay/browser runtime could not start.
+The implementation was checked with CPU PyTorch, Python 3.12, and Node 24. A real CUDA/FP16 test is included for the Colab notebook and skipped when CUDA is unavailable. CUDA/MPS execution requires compatible local hardware and was not exercised in this environment. The frontend production build passes. Interactive visual browser QA was unavailable because the managed preview relay/browser runtime could not start.
 
 ## Third-party assets
 
 DM Sans and Space Grotesk are served from `frontend/public/fonts/` under the SIL Open Font License; license files are included. The original GPT-2 tokenizer files are distributed under the included MIT license, with canonical SHA-256 digests documented in `backend/assets/tokenizer/README.txt`. TinyShakespeare is obtained from Karpathy's public char-rnn dataset only when you click Download; the built-in public-domain Shakespeare excerpt is available offline.
+
+Magic 8k tokenizer assets are bundled under Apache 2.0 with their pinned source revision and checksum. See `backend/assets/magic8k/`.

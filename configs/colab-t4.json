@@ -1,0 +1,13 @@
+{
+  "preset": "Mini",
+  "tokenizer": "magic8k",
+  "precision": "float16",
+  "model": {"block_size": 256},
+  "mode": "pretrain",
+  "datasets": [{"name": "dolly.jsonl", "weight": 100}],
+  "max_steps": 1000,
+  "learning_rate": 0.0003,
+  "batch_size": 32,
+  "gradient_accumulation": 2,
+  "eval_interval": 250
+}

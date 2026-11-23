@@ -27,6 +27,7 @@ class Dimensions(StrictModel):
 
 class Training(StrictModel):
     mode: Literal['pretrain', 'sft', 'dpo'] = 'pretrain'
+    precision: Literal['auto','float32','float16'] = 'auto'
     datasets: list[Source] = Field(default_factory=lambda: [Source(name='starter-sample.txt', weight=100)])
     max_steps: int = Field(default=250, ge=1, le=1000000)
     learning_rate: float = Field(default=0.0003, gt=0, le=0.1)
@@ -39,7 +40,7 @@ class Training(StrictModel):
 
 class NewRun(Training):
     preset: Literal['Nano', 'Micro', 'Mini'] = 'Nano'
-    tokenizer: Literal['char', 'bpe'] = 'char'
+    tokenizer: Literal['char', 'bpe', 'magic8k'] = 'char'
     model: Dimensions | None = None
 
 
@@ -97,5 +98,6 @@ class Prompts(StrictModel):
 
 
 class HubImportRequest(StrictModel):
-    dataset_id: str
+    dataset_id: str = 'all'
+    dataset_ids: list[str] | None = Field(default=None, min_length=1, max_length=32)
     max_records: int = Field(default=0, ge=0, le=1000000)

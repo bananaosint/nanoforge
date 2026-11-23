@@ -144,7 +144,7 @@ class GPT(nn.Module):
         try:
             for _ in range(max_new_tokens):
                 context = ids[:, -self.config.block_size:]
-                logits = self(context)['logits'][:, -1, :] / max(temperature, 0.01)
+                logits = self(context)['logits'][:, -1, :].float() / max(temperature, 0.01)
                 if top_k > 0:
                     cutoff = logits.topk(min(top_k, logits.size(-1))).values[:, -1:]
                     logits = logits.masked_fill(logits < cutoff, float('-inf'))

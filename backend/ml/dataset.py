@@ -97,7 +97,10 @@ class WeightedMixer:
             start = random.randrange(len(ids) - length)
             xs.append(torch.tensor(np.asarray(ids[start:start + length]), dtype=torch.long))
             ys.append(torch.tensor(np.asarray(ids[start + 1:start + length + 1]), dtype=torch.long))
-        return torch.stack(xs).to(self.device), torch.stack(ys).to(self.device)
+        x,y=torch.stack(xs),torch.stack(ys)
+        if str(self.device).startswith('cuda'):
+            x,y=x.pin_memory(),y.pin_memory()
+        return x.to(self.device,non_blocking=True),y.to(self.device,non_blocking=True)
 
 
 def completion_batch(tokenizer, prompt, completion, block_size, device):
@@ -116,7 +119,7 @@ def completion_batch(tokenizer, prompt, completion, block_size, device):
 
 def completion_log_probability(model, tokenizer, prompt, completion, device):
     x, y = completion_batch(tokenizer, prompt, completion, model.config.block_size, device)
-    logits = model(x)['logits'].log_softmax(-1)
+    logits = model(x)['logits'].float().log_softmax(-1)
     mask = y != -100
     # DPO uses the sum of completion token log probabilities, not a mean.
     selected = logits.gather(-1, y.clamp_min(0).unsqueeze(-1)).squeeze(-1)

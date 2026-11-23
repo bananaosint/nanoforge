@@ -11,3 +11,7 @@ checkpoints/*
 data/*
 !data/.gitkeep
 !data/starter-sample.txt
+
+.env
+.env.*
+.ipynb_checkpoints/

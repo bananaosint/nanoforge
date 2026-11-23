@@ -1,5 +1,6 @@
 """Single-owner background training with explicit CE, SFT, and DPO objectives."""
 import copy
+from contextlib import nullcontext
 import json
 import math
 import random
@@ -33,6 +34,10 @@ class Trainer:
         self.pause_event = threading.Event()
         self.thread = None
         self.model = self.tokenizer = self.optimizer = None
+        self.amp_enabled = False
+        self.precision = 'float32'
+        self.scaler = None
+        self.overflow_retries = 0
         self.step = 0
         self.target_step = None
         self.run_id = None
@@ -46,6 +51,47 @@ class Trainer:
         self.val_loss = None
         self.prompts = store.setting('prompts', DEFAULT_PROMPTS)
 
+    def _configure_precision(self, config, scaler_state=None):
+        requested = config.get('precision','auto')
+        if requested not in ('auto','float32','float16'):
+            raise ValueError('Precision must be auto, float32, or float16.')
+        cuda = str(self.device).split(':')[0] == 'cuda'
+        if requested == 'float16' and not cuda:
+            raise ValueError('FP16 training requires CUDA. Use auto or float32 on CPU/MPS/XPU.')
+        enabled = cuda and requested != 'float32'
+        if self.scaler is None or enabled != self.amp_enabled:
+            self.scaler = torch.amp.GradScaler('cuda',enabled=enabled,init_scale=1024.0)
+        self.amp_enabled = enabled
+        self.precision = 'float16' if enabled else 'float32'
+        if enabled and scaler_state:
+            self.scaler.load_state_dict(scaler_state)
+
+    def _autocast(self):
+        return torch.autocast(device_type='cuda',dtype=torch.float16) if self.amp_enabled else nullcontext()
+
+    @staticmethod
+    def _cpu_tree(value):
+        if torch.is_tensor(value):
+            return value.detach().cpu()
+        if isinstance(value,dict):
+            return {key:Trainer._cpu_tree(item) for key,item in value.items()}
+        if isinstance(value,list):
+            return [Trainer._cpu_tree(item) for item in value]
+        if isinstance(value,tuple):
+            return tuple(Trainer._cpu_tree(item) for item in value)
+        return value
+
+    def _model_state_for_checkpoint(self):
+        # Preserve tied embedding storage while copying CUDA parameters to CPU.
+        copies={}
+        result={}
+        for name,tensor in self.model.state_dict().items():
+            key=(str(tensor.device),tensor.data_ptr(),tuple(tensor.shape),tuple(tensor.stride()),str(tensor.dtype))
+            if key not in copies:
+                copies[key]=tensor.detach().float().cpu() if tensor.is_floating_point() else tensor.detach().cpu()
+            result[name]=copies[key]
+        return result
+
     def busy(self):
         return self.thread is not None and self.thread.is_alive()
 
@@ -56,12 +102,13 @@ class Trainer:
     def create(self, config):
         with self.lock:
             self.require_idle()
+            self._configure_precision(config)
             texts = self._texts(config.get('datasets', []))
             tokenizer = Tokenizer(config.get('tokenizer', 'char'), vocabulary_text(texts) if config.get('tokenizer', 'char') == 'char' else '')
             model_config = {**PRESETS[config.get('preset', 'Nano')], **config.get('model', {}), 'vocab_size': tokenizer.vocab_size}
             candidate = GPT(ModelConfig(**model_config)).to(self.device)
             self.model, self.tokenizer = candidate, tokenizer
-            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.get('learning_rate', 0.0003), weight_decay=0.1, foreach=False if self.device == 'xpu' else None)
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.get('learning_rate', 0.0003), weight_decay=0.1, fused=str(self.device).startswith('cuda'), foreach=False if str(self.device).split(':')[0] in ('xpu','cuda') else None)
             self.config = config
             self.step, self.val_loss, self.checkpoint = 0, None, None
             self.target_step = None
@@ -99,6 +146,7 @@ class Trainer:
                 raise ValueError('A run is already active. Use Resume for a paused run.')
             options = {**self.config, **config}
             mode = options.get('mode', 'pretrain')
+            self._configure_precision(options)
             mixer = None
             pairs = []
             if mode == 'pretrain':
@@ -149,39 +197,52 @@ class Trainer:
                     self.optimizer.zero_grad(set_to_none=True)
                     total, tokens = 0.0, 0
                     for _ in range(accumulation):
-                        if self.mode == 'pretrain' or (self.mode == 'sft' and mixer and random.random() < options.get('base_mix', 0.1)):
-                            x, y = mixer.batch(options.get('batch_size', 8))
-                            loss = self.model(x, y)['loss']
-                            tokens += x.numel()
-                        elif self.mode == 'sft':
-                            losses = []
-                            for pair in random.choices(pairs, k=options.get('batch_size', 8)):
-                                x, y = completion_batch(self.tokenizer, pair['prompt'], pair['corrected_output'], self.model.config.block_size, self.device)
-                                losses.append(self.model(x, y)['loss'])
+                        with self._autocast():
+                            if self.mode == 'pretrain' or (self.mode == 'sft' and mixer and random.random() < options.get('base_mix', 0.1)):
+                                x, y = mixer.batch(options.get('batch_size', 8))
+                                loss = self.model(x, y)['loss']
                                 tokens += x.numel()
-                            loss = torch.stack(losses).mean()
-                        else:
-                            losses = []
-                            # Disable dropout for policy and reference log-probability comparison.
-                            self.model.eval()
-                            for pair in random.choices(pairs, k=options.get('batch_size', 8)):
-                                winner = pair['winner']
-                                chosen, rejected = (pair['response_a'], pair['response_b']) if winner == 'a' else (pair['response_b'], pair['response_a'])
-                                win = completion_log_probability(self.model, self.tokenizer, pair['prompt'], chosen, self.device)
-                                lose = completion_log_probability(self.model, self.tokenizer, pair['prompt'], rejected, self.device)
-                                with torch.no_grad():
-                                    ref_win = completion_log_probability(reference, self.tokenizer, pair['prompt'], chosen, self.device)
-                                    ref_lose = completion_log_probability(reference, self.tokenizer, pair['prompt'], rejected, self.device)
-                                loss_dpo = -F.logsigmoid(options.get('beta', 0.1) * ((win - ref_win) - (lose - ref_lose)))
-                                losses.append(loss_dpo.mean())
-                                tokens += min(self.model.config.block_size, len(self.tokenizer.encode(chosen))) + min(self.model.config.block_size, len(self.tokenizer.encode(rejected)))
-                            loss = torch.stack(losses).mean()
-                        if not torch.isfinite(loss):
+                            elif self.mode == 'sft':
+                                losses = []
+                                for pair in random.choices(pairs, k=options.get('batch_size', 8)):
+                                    x, y = completion_batch(self.tokenizer, pair['prompt'], pair['corrected_output'], self.model.config.block_size, self.device)
+                                    losses.append(self.model(x, y)['loss'])
+                                    tokens += x.numel()
+                                loss = torch.stack(losses).mean()
+                            else:
+                                losses = []
+                                # Disable dropout for policy and reference log-probability comparison.
+                                self.model.eval()
+                                for pair in random.choices(pairs, k=options.get('batch_size', 8)):
+                                    winner = pair['winner']
+                                    chosen, rejected = (pair['response_a'], pair['response_b']) if winner == 'a' else (pair['response_b'], pair['response_a'])
+                                    win = completion_log_probability(self.model, self.tokenizer, pair['prompt'], chosen, self.device)
+                                    lose = completion_log_probability(self.model, self.tokenizer, pair['prompt'], rejected, self.device)
+                                    with torch.no_grad():
+                                        ref_win = completion_log_probability(reference, self.tokenizer, pair['prompt'], chosen, self.device)
+                                        ref_lose = completion_log_probability(reference, self.tokenizer, pair['prompt'], rejected, self.device)
+                                    loss_dpo = -F.logsigmoid(options.get('beta', 0.1) * ((win - ref_win) - (lose - ref_lose)))
+                                    losses.append(loss_dpo.mean())
+                                    tokens += min(self.model.config.block_size, len(self.tokenizer.encode(chosen))) + min(self.model.config.block_size, len(self.tokenizer.encode(rejected)))
+                                loss = torch.stack(losses).mean()
+                        loss_value=loss.detach().float().item()
+                        if not math.isfinite(loss_value):
                             raise ValueError('Non-finite loss detected. Try a smaller learning rate or inspect the dataset.')
-                        (loss / accumulation).backward()
-                        total += loss.item() / accumulation
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0, error_if_nonfinite=True)
-                    self.optimizer.step()
+                        self.scaler.scale(loss / accumulation).backward()
+                        total += loss_value / accumulation
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(),1.0,error_if_nonfinite=not self.amp_enabled)
+                    scale_before = self.scaler.get_scale()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    if self.amp_enabled and self.scaler.get_scale() < scale_before:
+                        self.overflow_retries += 1
+                        if self.overflow_retries > 20:
+                            raise ValueError('Repeated FP16 gradient overflow. Lower the learning rate or use float32.')
+                        continue  # Overflowed updates do not count as training steps.
+                    self.overflow_retries = 0
+                    if str(self.device).startswith('cuda'):
+                        torch.cuda.synchronize()
                     self.step += 1
                     elapsed = max(time.perf_counter() - began, 1e-9)
                     metric = {'step': self.step, 'train_loss': total, 'val_loss': None, 'steps_per_sec': 1 / elapsed,
@@ -206,7 +267,7 @@ class Trainer:
 
     def _evaluate(self, mixer):
         self.model.eval()
-        with torch.no_grad():
+        with torch.no_grad(), self._autocast():
             losses = [self.model(*mixer.batch(self.config.get('batch_size', 8), validation=True))['loss'].item() for _ in range(3)]
             self.val_loss = sum(losses) / len(losses)
             if not math.isfinite(self.val_loss):
@@ -246,9 +307,11 @@ class Trainer:
         name = version_tag + '.pt'
         path = self.directory / name
         payload = {'model_config': asdict(self.model.config), 'tokenizer_state': self.tokenizer.state(),
-                   'model_state_dict': self.model.state_dict(), 'optimizer_state_dict': self.optimizer.state_dict(),
+                   'model_state_dict': self._model_state_for_checkpoint(), 'optimizer_state_dict': self._cpu_tree(self.optimizer.state_dict()),
                    'step': self.step, 'val_loss': self.val_loss, 'version_tag': version_tag,
-                   'training_config': self.config, 'mode': self.mode, 'run_id': self.run_id}
+                   'training_config': self.config, 'mode': self.mode, 'run_id': self.run_id,
+                   'precision':self.precision,'scaler_state_dict':self.scaler.state_dict() if self.scaler else {},
+                   'torch_version':str(torch.__version__),'checkpoint_format_version':1}
         temporary = path.with_suffix('.tmp')
         torch.save(payload, temporary)
         temporary.replace(path)
@@ -284,13 +347,15 @@ class Trainer:
             model.load_state_dict(payload['model_state_dict'])
             self.model = model.eval()
             self.tokenizer = Tokenizer(state=payload['tokenizer_state'])
-            self.optimizer = torch.optim.AdamW(model.parameters(), foreach=False if self.device == 'xpu' else None)
+            self.optimizer = torch.optim.AdamW(model.parameters(), fused=str(self.device).startswith('cuda'), foreach=False if str(self.device).split(':')[0] in ('xpu','cuda') else None)
             self.optimizer.load_state_dict(payload['optimizer_state_dict'])
-            if self.device == 'xpu':
-                for group in self.optimizer.param_groups:
+            for group in self.optimizer.param_groups:
+                group['fused'] = str(self.device).startswith('cuda')
+                if str(self.device).split(':')[0] in ('xpu','cuda'):
                     group['foreach'] = False
             self.step, self.val_loss, self.config = payload['step'], payload['val_loss'], payload.get('training_config', {})
             self.run_id, self.mode = payload.get('run_id'), payload.get('mode', 'pretrain')
+            self._configure_precision({**self.config,'precision':'auto'},payload.get('scaler_state_dict'))
             self.metrics = [json.loads(row['payload']) for row in self.store.rows('SELECT payload FROM metrics WHERE run_id=? ORDER BY id DESC LIMIT 3000', (self.run_id,))][::-1]
             self.checkpoint, self.state, self.error = name, 'ready', None
             self.target_step = None
@@ -305,7 +370,8 @@ class Trainer:
             raise ValueError('Enter a nonempty prompt.')
         prefix = format_prompt(prompt) if (mode or self.mode) in ('sft', 'dpo') else prompt
         ids = torch.tensor([tokenizer.encode(prefix)], device=self.device)
-        result = model.generate(ids, max_new_tokens, temperature, top_k, telemetry, seed)
+        with self._autocast():
+            result = model.generate(ids, max_new_tokens, temperature, top_k, telemetry, seed)
         generated = result['ids'][0, ids.size(1):].tolist()
         for item in result['steps']:
             item['token'] = tokenizer.decode_token(item['token_id'])
@@ -338,12 +404,17 @@ class Trainer:
             return {}
         try:
             jobs = json.loads(manifest.read_text())
-            return {j['output']: {'sft':j.get('rows') or 0, 'dpo':(j.get('rows') or 0) if k == 'hh-rlhf' else 0} for k,j in jobs.items() if j.get('state') in ('completed','sampled') and j.get('output','').endswith('.jsonl')}
+            result={}
+            for key,job in jobs.items():
+                result.update(job.get('previous_outputs',{}))
+                if job.get('state') in ('completed','sampled') and job.get('output','').endswith('.jsonl'):
+                    result[job['output']]={'sft':job.get('sft_pairs',job.get('rows') or 0),'dpo':job.get('dpo_pairs',(job.get('rows') or 0) if key=='hh-rlhf' else 0)}
+            return result
         except (ValueError, OSError):
             return {}
 
     def status(self):
-        return {'imported_pairs': self.imported_pairs(), 'state': self.state, 'device': self.device, 'device_name': device_name(self.device), 'step': self.step, 'target_step': self.target_step, 'mode': self.mode,
+        return {'imported_pairs': self.imported_pairs(), 'state': self.state, 'device': self.device, 'device_name': device_name(self.device), 'precision':self.precision, 'step': self.step, 'target_step': self.target_step, 'mode': self.mode,
                 'run_id': self.run_id, 'checkpoint': self.checkpoint, 'error': self.error, 'val_loss': self.val_loss,
                 'parameters': sum(p.numel() for p in self.model.parameters()) if self.model else 0,
                 'model_config': asdict(self.model.config) if self.model else None, 'config': self.config,
