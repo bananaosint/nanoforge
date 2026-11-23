@@ -1,5 +1,6 @@
 """A decoder-only GPT, with every architectural component visible in PyTorch."""
 from dataclasses import dataclass
+from types import SimpleNamespace
 import math
 import torch
 from torch import nn
@@ -10,6 +11,41 @@ PRESETS = {
     'Micro': dict(n_layer=6, n_head=4, n_embd=256, block_size=256, dropout=0.1),
     'Mini': dict(n_layer=8, n_head=6, n_embd=384, block_size=256, dropout=0.1),
 }
+MAX_PARAMETERS = 999_999_999
+
+
+def parameter_count(config):
+    """Exact unique parameter count, including biases and tied token embeddings."""
+    width = config.n_embd
+    return ((config.vocab_size + config.block_size) * width
+            + config.n_layer * (12 * width * width + 13 * width) + 2 * width)
+
+
+def resolve_model(preset, dimensions, vocab_size, target_parameters=None):
+    if preset not in (*PRESETS, 'Custom'):
+        raise ValueError('Unknown model preset.')
+    values = {**PRESETS.get(preset, PRESETS['Nano']), **dimensions, 'vocab_size': vocab_size}
+    if target_parameters is not None:
+        if not 1 <= target_parameters <= MAX_PARAMETERS:
+            raise ValueError('Parameter budget must be between 1 and 999,999,999.')
+        # Layers, heads and context stay fixed; fit the largest whole head width.
+        heads = values['n_head']
+        if heads < 1:
+            raise ValueError('The number of heads must be positive.')
+        low, high, best = 1, target_parameters // heads, None
+        while low <= high:
+            middle = (low + high) // 2
+            values['n_embd'] = middle * heads
+            # Check the arithmetic before constructing a validated configuration.
+            count = parameter_count(SimpleNamespace(**values))
+            if count <= target_parameters:
+                best, low = values['n_embd'], middle + 1
+            else:
+                high = middle - 1
+        if best is None:
+            raise ValueError('This budget is too small for the selected layers, heads, context and tokenizer.')
+        values['n_embd'] = best
+    return ModelConfig(**values)
 
 
 def detect_device():
@@ -50,10 +86,15 @@ class ModelConfig:
     dropout: float = 0.1
 
     def __post_init__(self):
-        if self.n_embd % self.n_head:
-            raise ValueError('Embedding width must be divisible by the number of heads.')
         if self.vocab_size < 2 or min(self.n_layer, self.n_head, self.n_embd, self.block_size) < 1:
             raise ValueError('Model dimensions must be positive, with at least two tokens.')
+        if self.n_embd % self.n_head:
+            raise ValueError('Embedding width must be divisible by the number of heads.')
+        if not 0 <= self.dropout <= 0.8:
+            raise ValueError('Dropout must be between 0 and 0.8.')
+        count = parameter_count(self)
+        if count > MAX_PARAMETERS:
+            raise ValueError(f'Model has {count:,} parameters. Choose fewer than 1,000,000,000.')
 
 
 class CausalSelfAttention(nn.Module):
@@ -70,12 +111,14 @@ class CausalSelfAttention(nn.Module):
         q, k, v = self.qkv(x).chunk(3, dim=-1)
         q, k, v = [t.view(batch, time, self.heads, width // self.heads).transpose(1, 2) for t in (q, k, v)]
         attention = None
-        if inspect:
+        if inspect or x.device.type == 'xla':
             # Explicit scores expose [batch, head, query, key] for the inspector.
             scores = q @ k.transpose(-2, -1) / math.sqrt(k.size(-1))
             mask = torch.ones(time, time, device=x.device, dtype=torch.bool).tril()
-            attention = scores.masked_fill(~mask, float('-inf')).softmax(dim=-1)
-            values = F.dropout(attention, self.dropout, self.training) @ v
+            attention = scores.float().masked_fill(~mask, float('-inf')).softmax(dim=-1)
+            values = F.dropout(attention, self.dropout, self.training).to(v.dtype) @ v
+            if not inspect:
+                attention = None
         else:
             values = F.scaled_dot_product_attention(q, k, v, is_causal=True,
                         dropout_p=self.dropout if self.training else 0.0)
@@ -130,7 +173,7 @@ class GPT(nn.Module):
             if inspect:
                 attentions.append(weights)
         logits = self.lm_head(self.norm(x))
-        loss = None if targets is None else F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
+        loss = None if targets is None else F.cross_entropy(logits.float().reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
         return {'logits': logits, 'loss': loss, 'attentions': attentions}
 
     @torch.no_grad()

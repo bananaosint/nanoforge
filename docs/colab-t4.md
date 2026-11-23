@@ -12,6 +12,10 @@ CUDA training uses **FP16 autocast** for eligible operations and **GradScaler**.
 
 T4 does not support BF16 or TF32 acceleration. The notebook uses FP16, and PyTorch chooses an attention implementation supported by the installed CUDA stack; FlashAttention is not forced on the T4. CPU/MPS/XPU automatic precision remains FP32. Explicit `float16` training on a non-CUDA device is rejected rather than silently changing its meaning.
 
+## Custom model sizes
+
+You can replace Mini with `preset: "Custom"` and explicit `model` dimensions in the config cell. The [custom size guide](../README.md#custom-model-size-below-1-billion-parameters) explains budget fitting and the exact count. Valid models may have any supported architecture with fewer than one billion parameters; width must be divisible by heads. Models close to the limit may exceed a T4's memory even with FP16 computation. The notebook's batch 32 default is for Mini; reduce it when increasing the model size.
+
 ## Pretokenization
 
 ```bash
@@ -40,7 +44,7 @@ Checkpoints retain the original required fields: `model_config`, `tokenizer_stat
 
 Model tensors are exported as **CPU FP32 tensors** and optimizer tensors are copied to CPU. Tied token/output embedding storage is preserved. The file does not require CUDA to deserialize. FP16 describes the computation used to train; it does not force CPU inference to perform unsupported half-precision operations. Compatible saved optimizer settings are reset for the destination device on resume.
 
-In Studio, use **Train & Monitor → Import .pt from Colab**. The backend streams uploads up to 2 GiB, uses `torch.load(..., map_location="cpu", weights_only=True)`, checks model/tokenizer consistency and tensor shapes, and reconstructs the JSON listing metadata. The frontend then selects the imported model. Existing filenames are not overwritten. A bare state dictionary is not a complete NanoForge checkpoint.
+In Studio, use **Train & Monitor → Import .pt checkpoint**. The backend streams uploads up to 16 GiB, uses `torch.load(..., map_location="cpu", weights_only=True)`, checks model/tokenizer consistency and tensor shapes, and reconstructs the JSON listing metadata. The frontend then selects the imported model. Existing filenames are not overwritten. A bare state dictionary is not a complete NanoForge checkpoint.
 
 Alternatively, copy both the notebook ZIP's `.pt` and `.json` into your local `checkpoints/` directory with the app stopped. After loading, choose locally available training datasets before continuing. Model/optimizer state is portable; dataset files and the separate SQLite timeline history are not embedded in `.pt`.
 

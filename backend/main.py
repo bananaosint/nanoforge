@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from .api.schemas import NewRun, Training, Generation, Arena, Feedback, CheckpointSelection, Prompts
+from .api.schemas import NewRun, ModelPreview, Training, Generation, Arena, Feedback, CheckpointSelection, Prompts
 from .ml.dataset import DatasetManager
 from .ml.corpus import FileCorpus
 from .ml.model import PRESETS, device_name
@@ -55,6 +55,10 @@ def create_app(root=None):
     @app.get('/api/presets')
     def presets():
         return PRESETS
+
+    @app.post('/api/models/preview')
+    def model_preview(body: ModelPreview):
+        return trainer.preview_model(body.model_dump(exclude_none=True))
 
     @app.get('/api/datasets')
     def list_datasets():
@@ -163,8 +167,8 @@ def create_app(root=None):
             with open(pending,'wb') as target:
                 while chunk:=await file.read(1024*1024):
                     size+=len(chunk)
-                    if size>2*1024*1024*1024:
-                        raise ValueError('Checkpoint uploads must be smaller than 2 GiB.')
+                    if size>16*1024*1024*1024:
+                        raise ValueError('Checkpoint uploads must be smaller than 16 GiB.')
                     target.write(chunk)
             return await asyncio.to_thread(register_checkpoint,pending,trainer.directory,name)
         finally:

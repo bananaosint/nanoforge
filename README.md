@@ -117,13 +117,19 @@ Or choose `tinystories`, `hh-rlhf`, `oasst1`, `no-robots`, or `goat` individuall
 
 Stop NanoForge first. Extract the updated ZIP into a temporary folder, then copy its `backend/`, `frontend/`, `examples/`, `package.json`, `start.sh`, and `README.md` into your existing NanoForge folder, replacing code files. Keep your existing `.venv/`, `data/`, `checkpoints/`, and `nanoforge.sqlite3*` files. Run `./start.sh` again: it installs the additional import/translation dependencies without recreating your environment. The ZIP contains no trained checkpoints, user feedback, or full downloaded corpora.
 
+## Kaggle TPU x8
+
+Import [the Kaggle TPU notebook](notebooks/NanoForge_Kaggle_TPU.ipynb) into Kaggle, enable Internet, select **TPU x8**, and run its cells. It installs/reuses matching PyTorch/XLA, runs an actual eight-core smoke test, prepares uint16 tokens, trains with **BF16**, and exports Studio-compatible CPU `.pt` weights. `configs/kaggle-tpu.json` uses Mini, batch 4 per core, accumulation 2 (effective batch 64). Use `preset: "Custom"` for larger architectures below one billion parameters.
+
+This is data parallel training: each core holds a full model; core memories are not pooled. The separate `python -m backend.train_xla` CLI supports pretraining, SFT and DPO. The local Studio server remains on CPU/CUDA/MPS/XPU. See [Kaggle setup, resume and memory details](docs/kaggle-tpu.md). Actual TPU kernels require the notebook's hardware test; development checks here run on CPU.
+
 ## Colab Tesla T4
 
 [Open the T4 notebook in Colab](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_T4.ipynb)
 
 Choose a T4 GPU runtime and run the notebook. `configs/colab-t4.json` uses Mini, Magic 8k, FP16 autocast + gradient scaling, fused AdamW, context 256, batch 32 and gradient accumulation 2. Pretokenization stores uint16 IDs; only sampled batches become int64 CUDA tensors. Parameters and exported checkpoint weights remain FP32 for stability and CPU compatibility.
 
-Download the notebook’s checkpoint ZIP and use **Train & Monitor → Import .pt from Colab**, or copy its `.pt` and `.json` into your local `checkpoints/` folder. The studio restores the embedded tokenizer/model/optimizer state on its own device. See `docs/colab-t4.md` for setup, resume, precision behavior and verification limits; see `docs/tokenizers.md` for the exact Magic tokenizer semantics.
+Download the notebook’s checkpoint ZIP and use **Train & Monitor → Import .pt checkpoint**, or copy its `.pt` and `.json` into your local `checkpoints/` folder. The studio restores the embedded tokenizer/model/optimizer state on its own device. See `docs/colab-t4.md` for setup, resume, precision behavior and verification limits; see `docs/tokenizers.md` for the exact Magic tokenizer semantics.
 
 ## First experiment
 
@@ -173,6 +179,22 @@ The model exposes learned token and positional embeddings, explicit Q/K/V projec
 
 *With a small character vocabulary. GPT-2 BPE has 50,257 tokens, so its tied embedding matrix substantially increases the parameter count (Nano BPE is about 7.2M). The status bar shows the actual count. Custom widths must be divisible by head count. UI architecture/tokenizer changes require a **new experiment**; a loaded checkpoint always retains its original architecture and tokenizer.
 
+### Custom model size (below 1 billion parameters)
+
+In **Train & Monitor → Model preset → Custom**, enter layers, heads, embedding width, context and dropout. The previous 12-layer / 768-width limits are removed. Width must divide evenly into heads. The live preview includes tokenizer embeddings, learned positions, biases and the shared output matrix counted once. Character vocabulary is measured from the selected datasets; changing data or tokenizer can change the count.
+
+For a desired size, enter **Parameter budget (millions)** and choose **Fit width to budget**. It keeps layers, heads and context fixed and chooses the largest head-divisible width at or below the budget. Discrete dimensions mean not every exact integer parameter count can be achieved. Click **New experiment** to initialize the chosen architecture; loaded models retain their saved dimensions.
+
+All new models, API/CLI configurations and checkpoint model configurations must have **at most 999,999,999 parameters**. The backend checks this before allocating model weights. Preview and budget fitting allocate no model tensors. The preview shows FP32 weight storage and an approximate 16 bytes per parameter for weights, gradients and AdamW state. Activations, temporary buffers and the extra DPO reference model need more memory; the parameter limit does not guarantee a model fits a particular GPU. Checkpoint uploads allow up to 16 GiB for larger weights and optimizer states.
+
+For headless/Colab training, set `"preset": "Custom"` and supply dimensions in the JSON config, for example:
+
+```json
+"model": {"n_layer": 12, "n_head": 8, "n_embd": 768, "block_size": 256, "dropout": 0.1}
+```
+
+The same count check applies regardless of training precision. Start with a small batch when increasing size on a T4.
+
 ### Objectives
 
 - **Pretrain / continue:** next-token cross-entropy on source-weighted random windows. Each selected source gets a contiguous 90/10 train/validation split. The sampler chooses a source per example in proportion to its weight. Very short sources use a shorter common context; sources with fewer than 20 tokens are rejected.
@@ -215,6 +237,7 @@ All REST paths below are prefixed by `/api`; `/docs` provides complete OpenAPI s
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/health`, `/status`, `/presets` | Health, active model/metrics, preset definitions |
+| POST | `/models/preview` | Exact parameter/storage preview; optional `target_parameters` fits width to budget without creating a model |
 | GET / POST | `/runs` | Run history / initialize a model |
 | GET | `/runs/{id}/metrics` | Durable loss and throughput history |
 | GET | `/datasets` | List corpora |
@@ -246,7 +269,7 @@ npm run build
 
 Smoke coverage: regular/manual forward agreement and causal masks; seeded generation and telemetry; all three tokenizers; uint16 packing and uint32 fallback; portable checkpoint upload; prompt loss masking; five pretraining steps with accumulation and checkpoint reload; two SFT and two DPO steps; parameter updates; pause/resume/stop; NaN protection; offline corpus fallback; dataset splits; FastAPI endpoints, CORS, WebSocket, feedback CRUD/export, and invalid requests.
 
-The implementation was checked with CPU PyTorch, Python 3.12, and Node 24. A real CUDA/FP16 test is included for the Colab notebook and skipped when CUDA is unavailable. CUDA/MPS execution requires compatible local hardware and was not exercised in this environment. The frontend production build passes. Interactive visual browser QA was unavailable because the managed preview relay/browser runtime could not start.
+The implementation was checked with CPU PyTorch, Python 3.12, and Node 24. Real CUDA/FP16 and eight-replica TPU/BF16 tests are included for their respective notebooks and skipped without hardware. CUDA/MPS/XPU/TPU execution was not exercised on this CPU-only development host. The frontend production build passes. Headless Chromium checks exercised custom sizing, budget fitting, the oversized-model guard and creating a custom experiment; desktop/mobile screenshots were inspected. CPU tests also exercise TPU-path static batching, objectives, resume, retention and portable Studio export.
 
 ## Third-party assets
 

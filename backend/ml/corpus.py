@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from array import array
+from functools import lru_cache
 from pathlib import Path
 import numpy as np
 from .tokenizer import format_prompt, END
@@ -38,10 +39,8 @@ class FileCorpus:
                             raise ValueError(f'{self.path.name}, line {number}: {exc}') from exc
 
     def vocabulary(self):
-        chars = set()
-        for chunk in self.chunks():
-            chars.update(chunk)
-        return chars
+        stat = self.path.stat()
+        return file_vocabulary(str(self.path.resolve()), stat.st_size, stat.st_mtime_ns)
 
     def preview(self, limit=5000):
         result = ''
@@ -75,6 +74,15 @@ class FileCorpus:
         if path.stat().st_size == 0:
             raise ValueError(f'Dataset {self.path.name} is empty.')
         return np.memmap(path, dtype=dtype, mode='r')
+
+
+@lru_cache(maxsize=32)
+def file_vocabulary(path, size, modified):
+    """Reuse vocabulary scans until a dataset changes (no token/model allocation)."""
+    chars = set()
+    for chunk in FileCorpus(Path(path)).chunks():
+        chars.update(chunk)
+    return frozenset(chars)
 
 
 def vocabulary_text(sources):

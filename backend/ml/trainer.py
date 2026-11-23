@@ -11,7 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 import torch
 from torch.nn import functional as F
-from .model import GPT, ModelConfig, PRESETS, detect_device, device_name
+from .model import GPT, ModelConfig, resolve_model, parameter_count, MAX_PARAMETERS, detect_device, device_name
 from .tokenizer import Tokenizer, format_prompt, END
 from .dataset import WeightedMixer, completion_batch, completion_log_probability
 from .corpus import FileCorpus, vocabulary_text, PairPool
@@ -53,6 +53,8 @@ class Trainer:
 
     def _configure_precision(self, config, scaler_state=None):
         requested = config.get('precision','auto')
+        if requested == 'bfloat16':
+            raise ValueError('TPU BF16 training uses python -m backend.train_xla. Use auto or float32 in the local studio.')
         if requested not in ('auto','float32','float16'):
             raise ValueError('Precision must be auto, float32, or float16.')
         cuda = str(self.device).split(':')[0] == 'cuda'
@@ -102,11 +104,10 @@ class Trainer:
     def create(self, config):
         with self.lock:
             self.require_idle()
+            tokenizer = self._new_tokenizer(config)
+            model_config = resolve_model(config.get('preset', 'Nano'), config.get('model', {}), tokenizer.vocab_size)
             self._configure_precision(config)
-            texts = self._texts(config.get('datasets', []))
-            tokenizer = Tokenizer(config.get('tokenizer', 'char'), vocabulary_text(texts) if config.get('tokenizer', 'char') == 'char' else '')
-            model_config = {**PRESETS[config.get('preset', 'Nano')], **config.get('model', {}), 'vocab_size': tokenizer.vocab_size}
-            candidate = GPT(ModelConfig(**model_config)).to(self.device)
+            candidate = GPT(model_config).to(self.device)
             self.model, self.tokenizer = candidate, tokenizer
             self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.get('learning_rate', 0.0003), weight_decay=0.1, fused=str(self.device).startswith('cuda'), foreach=False if str(self.device).split(':')[0] in ('xpu','cuda') else None)
             self.config = config
@@ -116,6 +117,20 @@ class Trainer:
             self.mode, self.state, self.error = 'pretrain', 'ready', None
             self._new_run(config)
             return self.status()
+
+    def _new_tokenizer(self, config):
+        texts = self._texts(config.get('datasets', []))
+        kind = config.get('tokenizer', 'char')
+        return Tokenizer(kind, vocabulary_text(texts) if kind == 'char' else '')
+
+    def preview_model(self, config):
+        """Count/size a new model without allocating tensors or changing the run."""
+        tokenizer = self._new_tokenizer(config)
+        model = resolve_model(config.get('preset', 'Nano'), config.get('model', {}),
+                              tokenizer.vocab_size, config.get('target_parameters'))
+        count = parameter_count(model)
+        return {'model_config': asdict(model), 'parameters': count, 'max_parameters': MAX_PARAMETERS,
+                'weights_bytes': count * 4, 'training_state_bytes': count * 16}
 
     def _new_run(self, config):
         self.run_id = uuid.uuid4().hex[:12]

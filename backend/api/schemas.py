@@ -12,10 +12,10 @@ class Source(StrictModel):
 
 
 class Dimensions(StrictModel):
-    n_layer: int | None = Field(default=None, ge=1, le=12)
-    n_head: int | None = Field(default=None, ge=1, le=16)
-    n_embd: int | None = Field(default=None, ge=16, le=768)
-    block_size: int | None = Field(default=None, ge=8, le=512)
+    n_layer: int | None = Field(default=None, ge=1, lt=1000000000)
+    n_head: int | None = Field(default=None, ge=1, lt=1000000000)
+    n_embd: int | None = Field(default=None, ge=1, lt=1000000000)
+    block_size: int | None = Field(default=None, ge=8, lt=1000000000)
     dropout: float | None = Field(default=None, ge=0, le=0.8)
 
     @model_validator(mode='after')
@@ -27,7 +27,7 @@ class Dimensions(StrictModel):
 
 class Training(StrictModel):
     mode: Literal['pretrain', 'sft', 'dpo'] = 'pretrain'
-    precision: Literal['auto','float32','float16'] = 'auto'
+    precision: Literal['auto','float32','float16','bfloat16'] = 'auto'
     datasets: list[Source] = Field(default_factory=lambda: [Source(name='starter-sample.txt', weight=100)])
     max_steps: int = Field(default=250, ge=1, le=1000000)
     learning_rate: float = Field(default=0.0003, gt=0, le=0.1)
@@ -39,9 +39,13 @@ class Training(StrictModel):
 
 
 class NewRun(Training):
-    preset: Literal['Nano', 'Micro', 'Mini'] = 'Nano'
+    preset: Literal['Nano', 'Micro', 'Mini', 'Custom'] = 'Nano'
     tokenizer: Literal['char', 'bpe', 'magic8k'] = 'char'
     model: Dimensions | None = None
+
+
+class ModelPreview(NewRun):
+    target_parameters: int | None = Field(default=None, ge=1, lt=1000000000)
 
 
 class Generation(StrictModel):
