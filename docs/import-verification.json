@@ -1,0 +1,46 @@
+{
+  "scope": "Five English sources; Chinese dataset skipped by request.",
+  "full_import_verification": {
+    "no-robots": {
+      "state": "completed",
+      "rows": 9500,
+      "excluded": 0,
+      "needs_review": 0,
+      "revision": "e6f9a4ac5c37faeb744ba9ecf0473184d7f8105b",
+      "output": "no-robots.jsonl"
+    },
+    "oasst1": {
+      "state": "completed",
+      "rows": 23427,
+      "excluded": 61010,
+      "needs_review": 0,
+      "revision": "fdf72ae0827c1cda404aff25b6603abec9e3399b",
+      "output": "oasst1.jsonl"
+    },
+    "hh-rlhf": {
+      "state": "completed",
+      "rows": 160488,
+      "excluded": 0,
+      "needs_review": 312,
+      "revision": "09be8c5bbc57cb3887f3a9732ad6aa7ec602a1fa",
+      "output": "hh-rlhf.jsonl"
+    },
+    "goat": {
+      "state": "completed",
+      "rows": 1746300,
+      "excluded": 0,
+      "needs_review": 0,
+      "revision": "0f18c8d3c6860930f0dd912b6de048479b8b5d1b",
+      "output": "goat.jsonl"
+    },
+    "tinystories": {
+      "state": "completed",
+      "rows": null,
+      "excluded": null,
+      "needs_review": null,
+      "revision": "ee050ed1f8720795be342921335e821856a2b42e",
+      "output": "TinyStoriesInstruct.txt"
+    }
+  },
+  "note": "These downloads were verified in the development workspace. Users must run imports in their own NanoForge instance; full corpora are not bundled in the application ZIP."
+}

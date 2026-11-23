@@ -1,0 +1,1 @@
+{"name":"nanoforge","private":true,"scripts":{"dev":"npm --prefix frontend run dev -- --port 5173","build":"npm --prefix frontend run build"}}
