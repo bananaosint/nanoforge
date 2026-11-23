@@ -1,52 +1,51 @@
-# Colab L4: one cell to train NanoForge
+# NanoForge Studio UI on a Colab L4
 
-[Open the L4 notebook in Colab](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_L4.ipynb). Choose **Runtime → Change runtime type → L4 GPU**, then run its single code cell. It clones/updates the repository, loads `scripts/colab_l4.py` into the notebook kernel, and runs installation, hardware checks, data preparation, training and download. Training itself runs in a fresh CUDA subprocess. No Kaggle account, TPU/XLA package, frontend server or Node installation is needed.
+[Open the L4 Studio notebook](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_L4.ipynb). Select **Runtime → Change runtime type → L4 GPU**, stop any earlier headless training cell, and run the notebook's launcher cell. The full UI appears **below the cell** through Colab's notebook proxy. The launcher does not start a training run or import corpora; choose those in the UI.
 
-## L4 profile
+## All model and training settings are in the UI
 
-`configs/colab-l4.json` uses Mini, Magic 8k, **FP16** autocast with GradScaler, context **512**, batch **32**, accumulation **2**, learning rate 0.0003, 1,000 additional updates and evaluation/checkpoints every 250 updates. Effective batch is 64. Fused CUDA AdamW and pinned/nonblocking batch transfers are shared with the existing trainer. PyTorch selects an SDPA implementation supported by the actual CUDA stack; no particular attention kernel is forced. These defaults are a practical starting point, not a measured throughput or maximum-memory claim.
+The Studio defaults to the L4 profile: Mini, Magic 8k, FP16, context 512, batch 32, accumulation 2, TF32 enabled, and 1,000 training steps. If Dolly already exists it is selected; otherwise the included starter sample is selected. These defaults apply only to a fresh Studio and can all be changed before creating a model. The header shows **COLAB STUDIO**, the connection and the detected device, so you can tell this backend apart from your local desktop Studio.
 
-L4 supports TF32, enabled in this profile by `allow_tf32: true`. The trainer applies that flag inside the actual training subprocess for CUDA matmul/cuDNN FP32 operations on compute capability >=8. FP16 remains the primary compute precision; TF32 is not another model tensor/storage dtype. Other profiles default to TF32 off. On CPU/MPS/XPU the flag is ignored. T4 does not enable it. Model master weights, AdamW state and exported weights remain FP32.
+- **Model configuration:** choose Nano/Micro/Mini or **Custom**. Custom exposes layers, heads, width, context, dropout, a parameter budget and the exact parameter count/memory estimate. Every model stays below one billion parameters. Dimensions are discrete and width must divide evenly into heads.
+- **Data & Mixer:** import sources from the existing Hugging Face catalog, upload UTF-8 text/JSONL, preview files and set weights. Imports run in the Colab runtime, so large source files do not need to pass through your browser. The importer still reports upstream access errors when a source is unavailable.
+- **Training:** change learning rate, batch, steps and evaluation interval. **Advanced hyperparameters** contains accumulation, compute precision and TF32. Use **New experiment** to apply architecture/tokenizer changes, then **Start training**. Pause/resume/stop remain available. Imports/tokenization and training use the same backend as the local app; token caches use uint16 when IDs fit and uint32 otherwise.
+- **Studio/Inspector:** generate, collect SFT/DPO feedback and inspect attention/token candidates using the active Colab model.
+- **Checkpoints:** select/upload a checkpoint, save manually while idle, or choose **Download .pt checkpoint** after saving/training. The `.pt` retains tokenizer, architecture, CPU FP32 weights and optimizer state. Import it in your desktop Studio using **Import .pt checkpoint**.
 
-The startup helper preserves a compatible CUDA PyTorch already installed in Colab and installs the app dependencies. It does not install CPU PyTorch or Torch/XLA. A GPU preflight requires an actual L4 and prints its name, memory, PyTorch and CUDA versions. Selecting a CPU/T4/TPU runtime stops with a clear message. Tests then perform real FP16 updates with TF32 off/on, export CPU tensors, register the checkpoint in Studio, generate on CPU and resume an optimizer update there.
+The default batch is intended for Mini. For a larger Custom model, reduce batch size, often to 1, and increase accumulation as needed. A sub-billion parameter count does not guarantee the model fits L4 memory. Model/master optimizer weights remain FP32; FP16 is compute precision. TF32 affects supported remaining FP32 CUDA matmuls and is ignored on unsupported devices. PyTorch selects a supported SDPA kernel. These defaults are an initial profile, not a measured maximum throughput claim.
 
-## Settings and custom size
+## Launcher and connection
 
-Edit the top of the notebook cell:
+The launcher loads `scripts/colab_ui.py`. It preserves compatible CUDA PyTorch, installs Python dependencies, verifies an actual L4, runs the CUDA FP16/TF32 checkpoint smoke tests, builds the React app, and starts a **single** FastAPI process on `127.0.0.1`. FastAPI serves both the production frontend and its API. A compatible installed Node is reused; otherwise the helper downloads an official Node 22 Linux bundle with SHA-256 verification into the run directory's install cache.
+
+`google.colab.output.serve_kernel_port_as_iframe` displays the app through the notebook's authenticated proxy. No public tunnel/account/key is used. The deprecated separate-window Colab helper is not used. Frontend assets, API requests and downloads support proxy path prefixes. Colab sessions use one-second HTTP status polling, so live plots/controls do not depend on WebSocket proxy support. Local desktop sessions retain WebSockets with HTTP fallback.
+
+The embedded app operates on the Colab backend and its GPU/files. It does not attach your separately running desktop UI to Colab. Keep the notebook/runtime connected while using the app; normal Colab allocation and idle policies apply.
+
+## Session control and storage
+
+The cell keeps its owned server in `nanoforge_studio`. For diagnostics:
 
 ```python
-TRAINING_STEPS = 1000
-BATCH_SIZE = 32
-GRADIENT_ACCUMULATION = 2
-CUSTOM_MODEL = None  # Uses Mini from the L4 profile
-RESUME = None
-RUN_HOME = '/content/nanoforge-l4-run'
+print(nanoforge_studio.logs())
 ```
 
-For example, set `CUSTOM_MODEL = dict(n_layer=12, n_head=8, n_embd=768, block_size=512, dropout=0.1)` and begin with a smaller batch. Width must be divisible by heads, and all architectures must have fewer than one billion parameters. The default batch 32 is for Mini, not an arbitrary larger model. The pre-training size preview allocates no model tensors and prints weight/optimizer-memory estimates; activations and temporary buffers need more GPU memory. If you run out of GPU memory, reduce `BATCH_SIZE` to 16, 8 or 1 and increase accumulation as needed. Refer to [custom sizing](../README.md#custom-model-size-below-1-billion-parameters).
+To shut down safely:
 
-The helper imports **Dolly only** and pre-tokenizes it with Magic 8k. Caches store uint16 IDs and are memory-mapped. Training expands only sampled batches to int64 tensors. This example initializes random weights; it does not download pretrained weights or attempt all the large catalog sources. To choose other datasets or SFT/DPO, edit a config and use the ordinary headless CLI. Character vocabularies above 65,536 use uint32 instead of overflowing.
-
-Set `RESUME` to a complete NanoForge Magic 8k checkpoint to continue a saved model. The checkpoint's architecture and tokenizer are retained; `TRAINING_STEPS` means additional optimizer updates. Local dataset files must be available. The CLI rejects a tokenizer mismatch. New architecture settings apply only to a new run.
-
-## Manual CLI and output
-
-From the repository root after preparing data:
-
-```bash
-python -m backend.train_cli --config configs/colab-l4.json \
-  --home /content/nanoforge-l4-run --device cuda --preview
-
-python -m backend.train_cli --config configs/colab-l4.json \
-  --home /content/nanoforge-l4-run --device cuda
+```python
+nanoforge_studio.stop()
 ```
 
-`--preview` prints exact size without model allocation. It sizes new models and cannot be combined with `--resume`. After a completed training run, `latest-checkpoint.json` is atomically written with the exact checkpoint and JSON metadata paths, state and step. The startup helper uses this manifest rather than guessing which file is newest. Training errors stop the cell; an interrupted CLI exits with code 130 after attempting a safe save, so the helper cannot mistake an old manifest for the new run's success.
+Shutdown requests the normal backend stop, waits for the current step/checkpoint and closes the process. Rerunning the launcher cell stops only that previous server before rebuilding; it does not kill unrelated processes. If shutdown needs more time, wait for the checkpoint and call `stop()` again. An occupied port is reported instead of silently reusing or killing another server.
 
-The cell downloads the `.pt`. In the updated Studio choose **Train & Monitor → Import .pt checkpoint**. The checkpoint embeds architecture, exact tokenizer, model/optimizer state, step and scaler metadata. Its tensors are on CPU; model tensors are FP32. The Studio needs no CUDA to deserialize it and switches compute precision for its own device. Select local datasets before continuing. Alternatively copy both `.pt` and `.json` into local `checkpoints/` with Studio stopped. The upload limit is 16 GiB.
+By default, data, feedback, caches, SQLite and checkpoints live in `/content/nanoforge-l4-run`; model files are in its `checkpoints/` directory. Earlier headless runs using that directory remain visible through the selectors. Startup leaves the trainer idle: choose a previous checkpoint explicitly to resume it.
 
-No ZIP is made automatically, avoiding another large copy. If the browser blocks the download or the file is too large, use Colab's Files panel or an already mounted Drive run directory. `/content` is ephemeral: preserve checkpoints before the runtime ends. Interval checkpoint files accumulate; allow adequate disk space for large runs and remove unwanted old versions yourself. Dataset files and SQLite history are not embedded in `.pt`.
+`/content` is temporary. Download/preserve checkpoints before disconnecting. For Drive persistence, mount Drive first and pass an already mounted folder as `home=` to `launch_studio`; model hyperparameters still stay in the UI. Drive random cache reads can be slower. Large proxy/browser downloads may be limited; Colab's Files panel or Drive provides an alternative. JSON listing metadata can be rebuilt by the desktop `.pt` import control. Dataset files/history are not embedded in `.pt`.
 
-## Validation
+## Validation limits
 
-CPU tests cover the new profile/custom settings, schema validation, CLI size preview, the completed-run manifest and exporting/importing the resulting checkpoint into Studio. Notebook code is parsed with empty saved outputs. The real CUDA/FP16 smoke tests run in the L4 startup helper and skip on the CPU-only development host. Actual L4 kernels, memory usage and throughput could not be measured here; the hardware test in your Colab session is the required live verification.
+CPU integration tests verify production UI serving, L4 defaults, idle startup, API training controls, checkpoint downloads, safe owned-process start/stop/restart, the iframe helper contract, and the Node download checksum/extraction path. Headless Chromium exercises the UI behind a reverse-proxy path prefix, including custom model settings, upload/mixer, training/polling, checkpoint save/download and generation. Actual Colab proxy authentication and L4 kernels cannot be executed in this development environment. The launcher runs real CUDA smoke tests on your assigned GPU before serving the UI.
+
+## Optional headless workflow
+
+The previous auto-training cell remains in [NanoForge_L4_Headless.ipynb](../notebooks/NanoForge_L4_Headless.ipynb), with [headless CLI/setup documentation](colab-l4-headless.md). The default L4 notebook now launches the UI instead.

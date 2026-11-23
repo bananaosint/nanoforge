@@ -71,7 +71,7 @@ def test_l4_cli_size_preview_and_portable_manifest(tmp_path):
 
 
 def test_l4_notebook_uses_committed_startup_function():
-    notebook=json.loads((ROOT/'notebooks/NanoForge_L4.ipynb').read_text())
+    notebook=json.loads((ROOT/'notebooks/NanoForge_L4_Headless.ipynb').read_text())
     assert notebook['metadata']['colab']['gpuType']=='L4'
     for cell in notebook['cells']:
         if cell['cell_type']=='code':

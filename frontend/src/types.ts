@@ -7,3 +7,5 @@ export type Feedback = {id:number;kind:'sft'|'preference';prompt:string;original
 export type Generation = {text:string;tokens:string[];steps:{token_id:number;token:string;top5:{id:number;token:string;probability:number}[]}[];attention:number[][][][];context_tokens:string[];checkpoint:string|null;seed:number}
 export type Timeline = {id:number;run_id:string;step:number;prompt:string;output:string}
 export type Dataset = {name:string;bytes:number}
+
+export type Runtime = {environment:'local'|'colab';label:string;transport:'websocket'|'poll';defaults:Record<string,unknown>|null}

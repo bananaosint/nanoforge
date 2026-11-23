@@ -7,7 +7,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 from .api.schemas import NewRun, ModelPreview, Training, Generation, Arena, Feedback, CheckpointSelection, Prompts
 from .ml.dataset import DatasetManager
 from .ml.corpus import FileCorpus
@@ -26,6 +27,13 @@ def create_app(root=None):
     datasets = DatasetManager(root / 'data')
     trainer = Trainer(datasets, store, root / 'checkpoints')
     imports = HubImports(datasets)
+    profile = os.environ.get('NANOFORGE_UI_PROFILE', '')
+    if profile not in ('', 'colab-l4'):
+        raise ValueError('Unknown UI profile.')
+    defaults = None
+    if profile:
+        config_path = Path(__file__).resolve().parents[1] / 'configs' / (profile + '.json')
+        defaults = NewRun.model_validate(json.loads(config_path.read_text())).model_dump(exclude_none=True)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -46,7 +54,18 @@ def create_app(root=None):
 
     @app.get('/api/health')
     def health():
-        return {'ok': True, 'device': trainer.device, 'device_name': device_name(trainer.device)}
+        return {'ok': True, 'device': trainer.device, 'device_name': device_name(trainer.device), 'pid': os.getpid()}
+
+    @app.get('/api/runtime')
+    def runtime():
+        options = dict(defaults) if defaults else None
+        if options is not None:
+            options['datasets'] = [source for source in options['datasets']
+                                   if source['name'] != 'hitl' and (datasets.directory / source['name']).is_file()]
+            if not options['datasets']:
+                options['datasets'] = [{'name': 'starter-sample.txt', 'weight': 100}]
+        return {'environment': 'colab' if profile else 'local', 'label': 'Colab L4' if profile else 'Local',
+                'transport': 'poll' if profile else 'websocket', 'defaults': options}
 
     @app.get('/api/status')
     def status():
@@ -182,6 +201,10 @@ def create_app(root=None):
     def select(body: CheckpointSelection):
         return trainer.load(body.name)
 
+    @app.get('/api/checkpoints/{name}/download')
+    def download_checkpoint(name: str):
+        return FileResponse(trainer.checkpoint_path(name), filename=name, media_type='application/octet-stream')
+
     @app.delete('/api/checkpoints/{name}')
     def delete_checkpoint(name: str):
         with trainer.lock:
@@ -271,6 +294,9 @@ def create_app(root=None):
         except (WebSocketDisconnect, RuntimeError):
             pass
 
+    frontend = Path(os.environ.get('NANOFORGE_FRONTEND_DIR', Path(__file__).resolve().parents[1] / 'frontend' / 'dist'))
+    if (frontend / 'index.html').is_file():
+        app.mount('/', StaticFiles(directory=frontend, html=True), name='studio')
     return app
 
 

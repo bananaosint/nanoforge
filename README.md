@@ -123,11 +123,11 @@ Import [the Kaggle TPU notebook](notebooks/NanoForge_Kaggle_TPU.ipynb) into Kagg
 
 This is data parallel training: each core holds a full model; core memories are not pooled. The separate `python -m backend.train_xla` CLI supports pretraining, SFT and DPO. The local Studio server remains on CPU/CUDA/MPS/XPU. See [Kaggle setup, resume and memory details](docs/kaggle-tpu.md). Actual TPU kernels require the notebook's hardware test; development checks here run on CPU.
 
-## Colab L4 GPU
+## Colab L4 GPU — full Studio UI
 
-[Open the one-cell L4 notebook](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_L4.ipynb). Select **L4 GPU** in Colab and run its code cell. It preserves Colab's CUDA PyTorch, verifies the actual GPU, runs CUDA training/Studio-export smoke tests, imports Dolly, prepares uint16 tokens, trains and downloads the `.pt`.
+[Open the L4 Studio notebook](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_L4.ipynb). Select **L4 GPU** and run its launcher cell. It verifies CUDA, builds the frontend and displays the complete Studio below the cell through Colab's notebook proxy. **Model size, datasets, hyperparameters, training controls, feedback and checkpoint downloads are in the UI.** Startup leaves training idle and imports no corpora automatically.
 
-`configs/colab-l4.json` uses Mini, FP16 + GradScaler, context 512, batch 32, accumulation 2 and TF32 for supported FP32 CUDA operations. Custom models remain below one billion parameters, with batch size reduced to fit GPU memory. Outputs retain the Studio's portable CPU FP32 checkpoint format. See [L4 settings, resume and copy-paste startup details](docs/colab-l4.md). Actual L4 performance is subject to the notebook's hardware test.
+The L4 defaults are Mini, Magic 8k, FP16 + GradScaler, context 512, batch 32, accumulation 2 and TF32. Custom architectures stay below one billion parameters; adjust batch size to fit memory. Outputs retain the portable CPU FP32 checkpoint format. No public tunnel or tunnel account is needed. Colab uses HTTP polling for live progress; the desktop app retains WebSockets. See [Colab UI startup, session controls and storage](docs/colab-l4.md). The earlier immediate-training cell remains in [the optional headless notebook](notebooks/NanoForge_L4_Headless.ipynb).
 
 ## Colab Tesla T4
 
@@ -242,7 +242,7 @@ All REST paths below are prefixed by `/api`; `/docs` provides complete OpenAPI s
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/health`, `/status`, `/presets` | Health, active model/metrics, preset definitions |
+| GET | `/health`, `/runtime`, `/status`, `/presets` | Health, UI environment/defaults/transport, active model/metrics, preset definitions |
 | POST | `/models/preview` | Exact parameter/storage preview; optional `target_parameters` fits width to budget without creating a model |
 | GET / POST | `/runs` | Run history / initialize a model |
 | GET | `/runs/{id}/metrics` | Durable loss and throughput history |
@@ -250,7 +250,8 @@ All REST paths below are prefixed by `/api`; `/docs` provides complete OpenAPI s
 | POST | `/datasets/upload`, `/datasets/tinyshakespeare` | Upload / download corpus |
 | GET / DELETE | `/datasets/{name}/preview`, `/datasets/{name}` | Preview / remove corpus |
 | POST | `/training/start`, `/training/pause`, `/training/resume`, `/training/stop` | Lifecycle; `start.mode` selects pretrain, sft, dpo |
-| GET | `/checkpoints` | Local checkpoint metadata |
+| GET | `/checkpoints` | Backend checkpoint metadata |
+| GET | `/checkpoints/{name}/download` | Download a portable .pt checkpoint |
 | POST | `/checkpoints/save`, `/checkpoints/select`, `/checkpoints/upload` | Save / restore / import portable .pt weights and optimizer |
 | DELETE | `/checkpoints/{name}` | Remove an inactive checkpoint |
 | GET / PUT | `/timeline`, `/prompts` | Experiment snapshots / exactly three pinned prompts |
