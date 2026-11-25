@@ -1,8 +1,14 @@
 # Dataset catalog and large imports
 
-The Data & Mixer panel contains 26 sources. Select sources with their checkboxes, choose a full training split or a 1,000/10,000-source-row sample, and click **Import selected**. Each card also has individual **Import full** and **Sample 1,000** controls. Chinese R1 remains excluded from the default catalog. The ZeroGPU Gradio adapter exposes the same source catalog for bounded 1,000-source-row CPU samples, subject to its separate 20 MiB preparation limit; full imports remain in Studio/CLI.
+**Data & Mixer** opens on **Training mix**, which lists the datasets with positive weights. **Browse datasets** has search, type filters, and eight sources per page. Expand a dataset for access settings and downloads. **Local files** has uploads, previews and file management. **Feedback** contains saved SFT and preference pairs.
 
-Cosmopedia v2, Wikipedia, FineWeb-Edu 10BT and FineMath 4+ begin unselected because full downloads are large. DailyDialog begins unselected because the supplied repository is currently inaccessible. The cards remain visible, so none of the requested sources is silently replaced or hidden.
+Choose **Streaming** to add an eligible Hugging Face dataset without downloading its corpus first, or **Local cache** to download a full train split or a sample and reuse it offline. Large streamable sources open with Streaming selected. The catalog's checkboxes explicitly select bulk downloads. All start unchecked. A cached sample can still be upgraded to a full download.
+
+Streaming works for pretraining and the optional SFT base-text mix in the persistent Studio and its Python CLI. It needs network access and a Magic 8k or GPT-2 BPE model. For a fresh model, adding a stream switches the default character tokenizer to Magic 8k. Existing checkpoints retain their original tokenizer. Cached and streamed sources can share one weighted mix. To train directly from instruction or preference pairs, add their cached files. OASST1, the raw dialogue sources, the inaccessible DailyDialog repository, and Cosmopedia 100M require Local cache. Cosmopedia 100M's very large row group needs its Parquet shard on disk. TPU and ZeroGPU use prepared local files. ZeroGPU keeps its separate bounded sample picker.
+
+Streamed windows are packed into 16-bit token buffers for the supplied BPE tokenizers. The reader prefetches HTTP byte ranges, and a bounded shuffle buffer samples the resulting windows. Rows numbered 0, 10, 20 and so on in each Parquet row group are reserved for validation. Each evaluation draws from the same small held-out window sample. Streamed and cached validation losses use different splits. Checkpoints store the immutable shard manifest, cursor, shuffle buffer and sampling state. Resuming the same mix replays any prefetched but unconsumed windows. It still needs access to the pinned Hugging Face revision. Streaming avoids corpus files and on-disk token caches. Downloads and tokenization can reduce throughput when prefetch falls behind.
+
+To use a stream in a headless training JSON, use a source name such as `{"name":"hf:fineweb-edu-10bt","weight":100}` and set `"tokenizer":"magic8k"`. Plain local filenames still select cached files.
 
 | Import ID | Repository / configuration | Normalization |
 | --- | --- | --- |

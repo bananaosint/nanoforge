@@ -76,7 +76,9 @@ These commands do not delete your data, checkpoints, feedback, or existing envir
 
 ## Direct Hugging Face dataset imports
 
-Start the updated app and open **Data & Mixer → Direct dataset imports**. Select source checkboxes and click **Import selected**, or use an individual card’s **Import full** / **Sample 1,000** buttons. The catalog contains 26 requested sources, including FineWeb-Edu 10BT, Cosmopedia 100M, FineMath 4+ and original TinyStories; see `docs/datasets.md` for the source/configuration table. Cosmopedia v2, English Wikipedia, FineWeb-Edu 10BT and FineMath 4+ start unselected because of their size, and the supplied DailyDialog ID reports its access issue. Files download directly onto the machine running the backend, bypassing the browser's 20 MB upload limit. Completed sources appear in the mixer at 0%: move their weight sliders to select them. A download in this chat's cloud workspace does not modify your own WSL installation. The ZeroGPU Gradio UI offers the same catalog as bounded CPU samples.
+Open **Data & Mixer → Browse datasets**. Search the 26-source catalog, expand a dataset, and choose **Streaming** or **Local cache**. A stream can join the weighted mix immediately. With Local cache, download the full train split or a sample, then add the file to the mix. Use **Local files** for uploads and previews, and **Feedback** for saved corrections and preferences. Bulk downloads start with no datasets selected.
+
+Streaming reads pinned Hugging Face data as training runs, using bounded memory and saving the stream position in Studio checkpoints. Use Magic 8k or GPT-2 BPE. Local cache keeps the existing downloadable files, offline training, and reusable token caches. See [dataset access modes and supported sources](docs/datasets.md).
 
 | Source | Imported material | Approximate download |
 | --- | --- | --- |

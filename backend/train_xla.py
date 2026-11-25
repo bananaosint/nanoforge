@@ -23,6 +23,8 @@ from .storage import Store
 def prepare(config,home,resume=None,seed=42,expected_replicas=0,log_every=10,keep_last=1):
     """Build caches once before spawning, avoiding concurrent .partial writes."""
     config=NewRun.model_validate(config).model_dump(exclude_none=True)
+    if any(source['weight'] > 0 and source['name'].startswith('hf:') for source in config['datasets']):
+        raise ValueError('TPU training requires Local cache. Download the selected Hugging Face datasets first.')
     if config['watchdog_enabled']:raise ValueError('Gemini watchdog is supported by the persistent Studio/CLI trainer, not TPU/XLA workers.')
     if config['precision']=='float16':
         raise ValueError('TPUs use bfloat16, not CUDA float16. Set precision to bfloat16 or float32.')

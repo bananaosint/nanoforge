@@ -1,6 +1,7 @@
-"""Seekable, bounded HTTP range reader for Parquet previews of large sources."""
+"""Seekable, bounded HTTP range reader for remote Parquet."""
 from collections import OrderedDict
 import io
+import time
 
 
 class RangeReader(io.RawIOBase):
@@ -47,3 +48,24 @@ class RangeReader(io.RawIOBase):
     def readinto(self,buffer):
         data=self.read(len(buffer));buffer[:len(data)]=data
         return len(data)
+
+
+def remote_file(shard, request, open_url, cancelled, timeout=15):
+    """Share range validation between sampling and training."""
+    def fetch(start, end):
+        if cancelled():
+            raise InterruptedError()
+        url = shard['url']
+        url += ('&' if '?' in url else '?') + 'nanoforge_range=' + str(time.time_ns())
+        headers = {'Range': f'bytes={start}-{end}'}
+        with open_url(request(url, headers), timeout=timeout) as response:
+            if response.status == 206:
+                expected = f"bytes {start}-{end}/{shard['size']}"
+                if response.headers.get('Content-Range') != expected:
+                    raise OSError('Server returned the wrong Parquet byte range.')
+                return response.read(end - start + 2)
+            if response.status == 200 and shard['size'] <= 4 * 1024 * 1024:
+                data = response.read(shard['size'] + 1)
+                return data[start:end + 1]
+            raise OSError('Server ignored HTTP range requests. Use Local cache for this dataset.')
+    return RangeReader(shard['size'], fetch)

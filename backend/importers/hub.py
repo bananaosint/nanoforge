@@ -32,6 +32,11 @@ OPTIONAL_CHINESE = {'id': 'chinese-r1-en', 'repo': 'Congliu/Chinese-DeepSeek-R1-
 BY_ID = {item['id']: item for item in [*CATALOG, OPTIONAL_CHINESE]}
 
 
+def supports_streaming(source):
+    return (source['id'] not in ('oasst1', 'chinese-r1-en')
+            and not any(source.get(key) for key in ('raw', 'needs_access', 'sample_download_shard')))
+
+
 def authenticated_request(url,headers=None):
     from urllib.parse import urlparse
     request=Request(url,headers={'User-Agent':'NanoForge/1.2',**(headers or {})})
@@ -131,7 +136,8 @@ class HubImports:
 
     def status(self):
         with self.lock:
-            return {'catalog': CATALOG, 'jobs': json.loads(json.dumps(self.jobs)), 'active': bool(self.thread and self.thread.is_alive())}
+            catalog = [dict(source, streaming=supports_streaming(source)) for source in CATALOG]
+            return {'catalog': catalog, 'jobs': json.loads(json.dumps(self.jobs)), 'active': bool(self.thread and self.thread.is_alive())}
 
     def start(self, key, max_records=0):
         keys = list(dict.fromkeys(key)) if isinstance(key,list) else ([item['id'] for item in CATALOG] if key == 'all' else [key])
@@ -432,23 +438,9 @@ class HubImports:
 
     def _range_rows(self,shards):
         import pyarrow.parquet as parquet
-        from .ranges import RangeReader
+        from .ranges import remote_file
         for shard in shards:
-            def fetch(start,end):
-                if self.cancel.is_set():raise InterruptedError()
-                url=shard['url']+('&' if '?' in shard['url'] else '?')+'nanoforge_range='+str(time.time_ns())
-                request=authenticated_request(url,{'Range':f'bytes={start}-{end}'})
-                with urlopen(request,timeout=45) as response:
-                    if response.status==206:
-                        expected=f'bytes {start}-{end}/'
-                        if not response.headers.get('Content-Range','').startswith(expected):
-                            raise OSError('Server returned the wrong Parquet byte range.')
-                        return response.read(end-start+2)
-                    if response.status==200 and shard['size']<=4*1024*1024:
-                        data=response.read(shard['size']+1)
-                        return data[start:end+1]
-                    raise OSError('Server ignored HTTP range requests; a full import is required.')
-            with RangeReader(shard['size'],fetch) as file:
+            with remote_file(shard, authenticated_request, urlopen, self.cancel.is_set, timeout=45) as file:
                 for batch in parquet.ParquetFile(file).iter_batches(batch_size=64):
                     yield from batch.to_pylist()
 

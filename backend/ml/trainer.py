@@ -14,6 +14,7 @@ from torch.nn import functional as F
 from .model import GPT, ModelConfig, resolve_model, parameter_count, active_parameter_count, export_config, MAX_PARAMETERS, detect_device, device_name
 from .tokenizer import Tokenizer, format_prompt, END
 from .dataset import WeightedMixer, completion_batch, completion_log_probability
+from .streaming import StreamingMixer, StreamingError, is_stream, stream_definition
 from .corpus import FileCorpus, vocabulary_text, PairPool
 from .parallel import ReplicaLoss, reduced_loss
 from .xla_training import fixed_completion_batch
@@ -60,6 +61,8 @@ class Trainer:
         self.prompts = store.setting('prompts', DEFAULT_PROMPTS)
         self.gemini=gemini or GeminiService(store)
         self.watchdog=CheckpointWatchdog(self,self.gemini)
+        self.stream_state = None
+        self.stream_mixer = None
 
     def _configure_precision(self, config, scaler_state=None):
         requested = config.get('precision','auto')
@@ -164,13 +167,41 @@ class Trainer:
             self._branch_pending = False
             self.mode, self.state, self.error = 'pretrain', 'ready', None
             self.watchdog.reset()
+            self.stream_state = None
             self._new_run(config)
             return self.status()
 
     def _new_tokenizer(self, config):
-        texts = self._texts(config.get('datasets', []))
+        local, remote = self._partition_sources(config.get('datasets', []))
         kind = config.get('tokenizer', 'char')
+        if remote and kind == 'char':
+            raise ValueError('Streaming requires Magic 8k or GPT-2 BPE. Character tokenization scans the entire corpus.')
+        texts = self._texts(local) if local or not remote else []
         return Tokenizer(kind, vocabulary_text(texts) if kind == 'char' else '')
+
+    @staticmethod
+    def _partition_sources(sources):
+        local, remote = [], []
+        for source in sources:
+            if source['weight'] <= 0:
+                continue
+            if is_stream(source['name']):
+                stream_definition(source['name'])
+                remote.append(source)
+            else:
+                local.append(source)
+        return local, remote
+
+    def _mixer(self, local, remote):
+        block_size = self.model.config.block_size
+        if not remote:
+            return WeightedMixer(self._texts(local), self.tokenizer, block_size, self.device)
+        if self.tokenizer.kind == 'char':
+            raise ValueError('Streaming requires a model with Magic 8k or GPT-2 BPE.')
+        if block_size > 8192:
+            raise ValueError('Streaming supports context windows up to 8192 tokens.')
+        return StreamingMixer(remote, self._texts(local) if local else [],
+                              self.tokenizer, block_size, self.device, self.stop_event, self.stream_state)
 
     def preview_model(self, config):
         """Count/size a new model without allocating tensors or changing the run."""
@@ -214,15 +245,16 @@ class Trainer:
             self._configure_parallel(options,validate_only=True)
             mixer = None
             pairs = []
+            local, remote = self._partition_sources(options.get('datasets', []))
             if mode == 'pretrain':
-                mixer = WeightedMixer(self._texts(options.get('datasets', [])), self.tokenizer, self.model.config.block_size, self.device)
+                mixer = self._mixer(local, remote)
             else:
-                corpora = [FileCorpus(self.datasets.path(s['name'])) for s in options.get('datasets', []) if s['weight'] > 0 and s['name'] != 'hitl']
+                corpora = [FileCorpus(self.datasets.path(s['name'])) for s in local if s['name'] != 'hitl']
                 pairs = PairPool(self.store.feedback('sft' if mode == 'sft' else 'preference'), corpora, mode)
                 if not pairs:
-                    raise ValueError('Collect feedback pairs before starting fine-tuning.')
+                    raise ValueError('Collect feedback or import a Local cache of a paired dataset before fine-tuning.')
                 if mode == 'sft' and options.get('base_mix', 0) > 0:
-                    mixer = WeightedMixer(self._texts(options.get('datasets', [])), self.tokenizer, self.model.config.block_size, self.device)
+                    mixer = self._mixer(local, remote)
             if self._branch_pending:
                 options['parent_checkpoint'] = self.checkpoint
             if self._branch_pending or mode != self.mode or self.state in ('completed', 'stopped', 'error'):
@@ -242,6 +274,9 @@ class Trainer:
             self.pause_event.clear()
             self.error, self.state = None, 'running'
             self.watchdog.reset(self.watchdog.state())
+            self.stream_mixer = mixer if isinstance(mixer, StreamingMixer) else None
+            if self.stream_mixer:
+                self.stream_state = self.stream_mixer.state()
             if background:
                 self.thread = threading.Thread(target=self._train, args=(options, mixer, pairs, reference, evaluate, time_budget_seconds), daemon=False, name='nanoforge-trainer')
                 self.thread.start()
@@ -257,6 +292,8 @@ class Trainer:
             if evaluate and self.mode == 'pretrain':
                 with self.lock:
                     self._evaluate(mixer)
+                    if self.stream_mixer:
+                        self.stream_state = self.stream_mixer.state()
                     if self.watchdog.enabled():self._save()
             target = self.target_step
             interval = options.get('eval_interval', 50)
@@ -336,6 +373,8 @@ class Trainer:
                     if str(self.device).startswith('cuda'):
                         torch.cuda.synchronize()
                     self.step += 1
+                    if self.stream_mixer:
+                        self.stream_state = self.stream_mixer.state()
                     elapsed = max(time.perf_counter() - began, 1e-9)
                     metric = {'step': self.step, 'train_loss': total, 'val_loss': None, 'steps_per_sec': 1 / elapsed,
                               'tokens_per_sec': tokens / elapsed, 'mode': self.mode}
@@ -358,15 +397,31 @@ class Trainer:
             with self.lock:
                 self._save()
                 self.state = 'stopped' if self.stop_event.is_set() else 'completed'
+        except (StreamingError, InterruptedError) as exc:
+            if not self.stream_mixer:
+                self.state, self.error = 'error', str(exc)
+            else:
+                with self.lock:
+                    try:
+                        self._save()
+                        self.state = 'stopped' if self.stop_event.is_set() else 'error'
+                        self.error = None if self.state == 'stopped' else str(exc)
+                    except Exception as save_error:
+                        self.state, self.error = 'error', str(save_error)
         except Exception as exc:
             with self.lock:
                 self.state, self.error = 'error', str(exc)
         finally:
+            if self.stream_mixer:
+                self.stream_mixer.close()
+                self.stream_mixer = None
             self._synchronous_running = False
             if self.model:
                 self.model.eval()
 
     def _evaluate(self, mixer):
+        if isinstance(mixer, StreamingMixer):
+            mixer.reset_validation()
         self.model.eval()
         with torch.no_grad(), self._autocast():
             losses = [self.model(*mixer.batch(self.config.get('batch_size', 8), validation=True))['loss'].item() for _ in range(3)]
@@ -415,6 +470,8 @@ class Trainer:
                    'precision':self.precision,'scaler_state_dict':self.scaler.state_dict() if self.scaler else {},
                    'torch_version':str(torch.__version__),'checkpoint_format_version':1}
         payload['watchdog_state']=self.watchdog.checkpoint_state()
+        if self.stream_state is not None:
+            payload['stream_state'] = self.stream_state
         temporary = path.with_suffix('.tmp')
         torch.save(payload, temporary)
         temporary.replace(path)
@@ -472,6 +529,7 @@ class Trainer:
             self.target_step = None
             self._branch_pending = True
             self.watchdog.reset(payload.get('watchdog_state'))
+            self.stream_state = payload.get('stream_state')
             return self.status()
 
     def _watchdog_rollback(self,name):
@@ -500,6 +558,10 @@ class Trainer:
             parallel=torch.nn.DataParallel(replica,device_ids=[0,1],output_device=0);training_gpus=2
         source=payload.get('version_tag','')+'.pt'
         source=source if Path(source).name==source and (self.directory/source).is_file() else None
+        stream_state = payload.get('stream_state')
+        if self.stream_mixer:
+            self.stream_mixer.restore(stream_state)
+        self.stream_state = stream_state
         self.model,self.optimizer,self.scaler=candidate,optimizer,scaler
         self.parallel,self.training_gpus=parallel,training_gpus
         self.step,self.val_loss=payload['step'],payload['val_loss']

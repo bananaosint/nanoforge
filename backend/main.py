@@ -14,6 +14,7 @@ from .ml.dataset import DatasetManager
 from .ml.corpus import FileCorpus
 from .ml.model import PRESETS, device_name
 from .ml.trainer import Trainer
+from .ml.streaming import is_stream
 from .storage import Store
 from .checkpoints import register_checkpoint
 from .importers.hub import HubImports
@@ -69,7 +70,7 @@ def create_app(root=None):
         options = dict(defaults) if defaults else None
         if options is not None:
             options['datasets'] = [source for source in options['datasets']
-                                   if source['name'] != 'hitl' and (datasets.directory / source['name']).is_file()]
+                                   if is_stream(source['name']) or (source['name'] != 'hitl' and (datasets.directory / source['name']).is_file())]
             if not options['datasets']:
                 options['datasets'] = [{'name': 'starter-sample.txt', 'weight': 100}]
         return {'environment': 'kaggle' if profile=='kaggle-t4x2' else ('colab' if profile else 'local'),
