@@ -133,6 +133,10 @@ This is data parallel training: each core holds a full model; core memories are 
 
 The conservative G4 defaults are Dense Mini, Magic 8k, CUDA BF16, TF32, context 512, batch 32 and accumulation 2. Select **Mixture of Experts (MoE)** under Architecture for learned top-k expert MLPs with balancing/z-loss controls. Total parameters include every expert and stay below one billion. Dense legacy checkpoints still load, and updated Studio supports portable MoE exports/resume. See [G4 setup](docs/colab-g4.md) and [MoE design/limits](docs/moe.md). MoE is currently a CPU/CUDA reference implementation, not an expert-sharded/fused kernel or TPU feature.
 
+## Hugging Face ZeroGPU Blackwell — Gradio UI
+
+The separate [ZeroGPU Space adapter](docs/zerogpu.md) provides CPU dataset/model preparation and short resumable GPU training/generation calls with settings in Gradio. It supports dense/MoE, BF16, packed uint16 caches and Studio-compatible `.pt` downloads. Its bounded demo profile caps models at 10M total parameters and requests 60-second GPU leases; use Colab/dedicated hardware for sustained or larger training. Default allocation is 48 GB; optional 96 GB uses twice the quota. The setup guide includes a single notebook cell to export and upload the self-contained Space. Live ZeroGPU execution remains unverified until deployment.
+
 ## Colab A100 GPU — full Studio UI
 
 [Open the A100 Studio notebook](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_A100.ipynb). Select **A100 GPU** and run the launcher cell. It installs the Python/frontend dependencies, checks the actual GPU, runs CUDA checkpoint smoke tests and displays the full UI below the cell through Colab's notebook proxy. Model size, datasets and all training settings stay in the UI; startup does not import data or start training.

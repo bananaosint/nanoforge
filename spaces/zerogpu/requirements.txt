@@ -1,0 +1,8 @@
+# Gradio, spaces, huggingface_hub and CUDA PyTorch are supplied by the Space runtime.
+# Do not use backend/requirements.txt here or replace the ZeroGPU-managed CUDA stack.
+numpy>=1.26,<3
+pydantic>=2,<3
+tiktoken>=0.8,<1
+tokenizers>=0.21,<1
+pyarrow>=17,<27
+chess>=1.11,<2

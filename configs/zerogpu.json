@@ -1,0 +1,22 @@
+{
+  "training": {
+    "preset": "Nano",
+    "tokenizer": "magic8k",
+    "precision": "bfloat16",
+    "model": {"block_size": 128},
+    "mode": "pretrain",
+    "datasets": [{"name": "starter-sample.txt", "weight": 100}],
+    "max_steps": 10,
+    "learning_rate": 0.0003,
+    "batch_size": 2,
+    "eval_interval": 1000,
+    "gradient_accumulation": 1
+  },
+  "lease_seconds": 60,
+  "work_seconds": 35,
+  "default_size": "large",
+  "max_parameters": 10000000,
+  "max_dataset_bytes": 20971520,
+  "max_checkpoint_bytes": 134217728,
+  "max_steps_per_call": 25
+}

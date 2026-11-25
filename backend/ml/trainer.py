@@ -35,6 +35,7 @@ class Trainer:
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
         self.thread = None
+        self._synchronous_running = False
         self.model = self.tokenizer = self.optimizer = None
         self.amp_enabled = False
         self.precision = 'float32'
@@ -135,7 +136,7 @@ class Trainer:
         return result
 
     def busy(self):
-        return self.thread is not None and self.thread.is_alive()
+        return self._synchronous_running or (self.thread is not None and self.thread.is_alive())
 
     def require_idle(self):
         if self.busy():
@@ -195,7 +196,7 @@ class Trainer:
             raise ValueError('Select at least one dataset with a positive weight.')
         return texts
 
-    def start(self, config):
+    def start(self, config, *, background=True, evaluate=True, time_budget_seconds=None):
         with self.lock:
             if self.model is None:
                 raise ValueError('Create a model run or select a checkpoint first.')
@@ -234,19 +235,27 @@ class Trainer:
             self.stop_event.clear()
             self.pause_event.clear()
             self.error, self.state = None, 'running'
-            self.thread = threading.Thread(target=self._train, args=(options, mixer, pairs, reference), daemon=False, name='nanoforge-trainer')
-            self.thread.start()
-            return self.status()
+            if background:
+                self.thread = threading.Thread(target=self._train, args=(options, mixer, pairs, reference, evaluate, time_budget_seconds), daemon=False, name='nanoforge-trainer')
+                self.thread.start()
+                return self.status()
+            self.thread = None
+            self._synchronous_running = True
+        self._train(options,mixer,pairs,reference,evaluate,time_budget_seconds)
+        return self.status()
 
-    def _train(self, options, mixer, pairs, reference):
+    def _train(self, options, mixer, pairs, reference, evaluate=True, time_budget_seconds=None):
+        deadline=None if time_budget_seconds is None else time.monotonic()+max(0,time_budget_seconds)
         try:
-            if self.mode == 'pretrain':
+            if evaluate and self.mode == 'pretrain':
                 with self.lock:
                     self._evaluate(mixer)
             target = self.target_step
             interval = options.get('eval_interval', 50)
             accumulation = options.get('gradient_accumulation', 1)
             while self.step < target and not self.stop_event.is_set():
+                if deadline is not None and time.monotonic()>=deadline:
+                    self.stop_event.set();break
                 if self.pause_event.is_set():
                     self.stop_event.wait(0.1)
                     continue
@@ -309,7 +318,7 @@ class Trainer:
                     elapsed = max(time.perf_counter() - began, 1e-9)
                     metric = {'step': self.step, 'train_loss': total, 'val_loss': None, 'steps_per_sec': 1 / elapsed,
                               'tokens_per_sec': tokens / elapsed, 'mode': self.mode}
-                    if self.mode == 'pretrain' and (self.step % interval == 0 or self.step == target):
+                    if evaluate and self.mode == 'pretrain' and (self.step % interval == 0 or self.step == target):
                         self._evaluate(mixer)
                         metric['val_loss'] = self.val_loss
                     self.metrics.append(metric)
@@ -324,6 +333,7 @@ class Trainer:
             with self.lock:
                 self.state, self.error = 'error', str(exc)
         finally:
+            self._synchronous_running = False
             if self.model:
                 self.model.eval()
 
