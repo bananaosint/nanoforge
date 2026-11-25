@@ -1,0 +1,22 @@
+{
+  "preset": "Mini",
+  "tokenizer": "magic8k",
+  "precision": "bfloat16",
+  "allow_tf32": true,
+  "model": {
+    "block_size": 512
+  },
+  "mode": "pretrain",
+  "datasets": [
+    {
+      "name": "dolly.jsonl",
+      "weight": 100
+    }
+  ],
+  "max_steps": 1000,
+  "learning_rate": 0.0003,
+  "batch_size": 32,
+  "gradient_accumulation": 2,
+  "eval_interval": 250,
+  "multi_gpu": false
+}

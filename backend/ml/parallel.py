@@ -13,20 +13,25 @@ class ReplicaLoss(nn.Module):
 
     @staticmethod
     def log_probability(model,x,y):
-        logits=model(x)['logits'].float().log_softmax(-1)
-        return (logits.gather(-1,y.clamp_min(0).unsqueeze(-1)).squeeze(-1)*(y!=-100)).sum(-1)
+        output=model(x)
+        logits=output['logits'].float().log_softmax(-1)
+        return (logits.gather(-1,y.clamp_min(0).unsqueeze(-1)).squeeze(-1)*(y!=-100)).sum(-1),output['aux_loss']
 
     def forward(self,x,y,rejected_x=None,rejected_y=None):
-        context=torch.autocast('cuda',dtype=torch.float16) if self.precision=='float16' else nullcontext()
+        context=torch.autocast('cuda',dtype=torch.bfloat16 if self.precision=='bfloat16' else torch.float16) if self.precision in ('float16','bfloat16') else nullcontext()
         with context:
             if rejected_x is None:
-                logits=self.model(x)['logits'].float()
+                output=self.model(x)
+                logits=output['logits'].float()
                 losses=F.cross_entropy(logits.flatten(0,1),y.flatten(),ignore_index=-100,reduction='none')
-                return losses.sum().reshape(1),(y!=-100).sum().reshape(1)
-            policy=self.log_probability(self.model,x,y)-self.log_probability(self.model,rejected_x,rejected_y)
+                count=(y!=-100).sum()
+                return (losses.sum()+output['aux_loss']*count).reshape(1),count.reshape(1)
+            win,win_aux=self.log_probability(self.model,x,y)
+            lose,lose_aux=self.log_probability(self.model,rejected_x,rejected_y)
+            policy=win-lose
             with torch.no_grad():
-                baseline=self.log_probability(self.reference,x,y)-self.log_probability(self.reference,rejected_x,rejected_y)
-            losses=-F.logsigmoid(self.beta*(policy-baseline))
+                baseline=self.log_probability(self.reference,x,y)[0]-self.log_probability(self.reference,rejected_x,rejected_y)[0]
+            losses=-F.logsigmoid(self.beta*(policy-baseline))+0.5*(win_aux+lose_aux)
             return losses.sum().reshape(1),torch.ones_like(losses).sum().reshape(1)
 
 

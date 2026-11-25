@@ -11,7 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 import torch
 from torch.nn import functional as F
-from .model import GPT, ModelConfig, resolve_model, parameter_count, MAX_PARAMETERS, detect_device, device_name
+from .model import GPT, ModelConfig, resolve_model, parameter_count, active_parameter_count, export_config, MAX_PARAMETERS, detect_device, device_name
 from .tokenizer import Tokenizer, format_prompt, END
 from .dataset import WeightedMixer, completion_batch, completion_log_probability
 from .corpus import FileCorpus, vocabulary_text, PairPool
@@ -58,23 +58,23 @@ class Trainer:
 
     def _configure_precision(self, config, scaler_state=None):
         requested = config.get('precision','auto')
-        if requested == 'bfloat16':
-            raise ValueError('TPU BF16 training uses python -m backend.train_xla. Use auto or float32 in the local studio.')
-        if requested not in ('auto','float32','float16'):
-            raise ValueError('Precision must be auto, float32, or float16.')
+        if requested not in ('auto','float32','float16','bfloat16'):
+            raise ValueError('Unknown compute precision.')
         cuda = str(self.device).split(':')[0] == 'cuda'
         if requested == 'float16' and not cuda:
             raise ValueError('FP16 training requires CUDA. Use auto or float32 on CPU/MPS/XPU.')
+        if requested=='bfloat16' and not (cuda and torch.cuda.get_device_capability(self.device)[0]>=8 and torch.cuda.is_bf16_supported()):
+            raise ValueError('CUDA BF16 needs native BF16 GPU support. For TPU use python -m backend.train_xla; use auto on CPU.')
         self.allow_tf32 = bool(cuda and config.get('allow_tf32',False)
                                and torch.cuda.get_device_capability(self.device)[0] >= 8)
         if cuda:
             torch.backends.cuda.matmul.allow_tf32 = self.allow_tf32
             torch.backends.cudnn.allow_tf32 = self.allow_tf32
-        enabled = cuda and requested != 'float32'
+        enabled = cuda and requested not in ('float32','bfloat16')
         if self.scaler is None or enabled != self.amp_enabled:
             self.scaler = torch.amp.GradScaler('cuda',enabled=enabled,init_scale=1024.0)
         self.amp_enabled = enabled
-        self.precision = 'float16' if enabled else 'float32'
+        self.precision = 'bfloat16' if requested=='bfloat16' else ('float16' if enabled else 'float32')
         if enabled and scaler_state:
             self.scaler.load_state_dict(scaler_state)
 
@@ -109,7 +109,7 @@ class Trainer:
         return reduced_loss(self.parallel(*tensors)),win[0].numel()+lose[0].numel()
 
     def _autocast(self):
-        return torch.autocast(device_type='cuda',dtype=torch.float16) if self.amp_enabled else nullcontext()
+        return torch.autocast(device_type='cuda',dtype=torch.bfloat16 if self.precision=='bfloat16' else torch.float16) if str(self.device).startswith('cuda') and self.precision!='float32' else nullcontext()
 
     @staticmethod
     def _cpu_tree(value):
@@ -172,7 +172,7 @@ class Trainer:
                               tokenizer.vocab_size, config.get('target_parameters'))
         count = parameter_count(model)
         return {'model_config': asdict(model), 'parameters': count, 'max_parameters': MAX_PARAMETERS,
-                'weights_bytes': count * 4, 'training_state_bytes': count * 16}
+                'active_parameters':active_parameter_count(model), 'weights_bytes': count * 4, 'training_state_bytes': count * 16}
 
     def _new_run(self, config):
         self.run_id = uuid.uuid4().hex[:12]
@@ -278,13 +278,13 @@ class Trainer:
                                 for pair in random.choices(pairs, k=options.get('batch_size', 8)):
                                     winner = pair['winner']
                                     chosen, rejected = (pair['response_a'], pair['response_b']) if winner == 'a' else (pair['response_b'], pair['response_a'])
-                                    win = completion_log_probability(self.model, self.tokenizer, pair['prompt'], chosen, self.device)
-                                    lose = completion_log_probability(self.model, self.tokenizer, pair['prompt'], rejected, self.device)
+                                    win,win_aux = completion_log_probability(self.model, self.tokenizer, pair['prompt'], chosen, self.device,return_aux=True)
+                                    lose,lose_aux = completion_log_probability(self.model, self.tokenizer, pair['prompt'], rejected, self.device,return_aux=True)
                                     with torch.no_grad():
                                         ref_win = completion_log_probability(reference, self.tokenizer, pair['prompt'], chosen, self.device)
                                         ref_lose = completion_log_probability(reference, self.tokenizer, pair['prompt'], rejected, self.device)
                                     loss_dpo = -F.logsigmoid(options.get('beta', 0.1) * ((win - ref_win) - (lose - ref_lose)))
-                                    losses.append(loss_dpo.mean())
+                                    losses.append(loss_dpo.mean()+0.5*(win_aux+lose_aux))
                                     tokens += min(self.model.config.block_size, len(self.tokenizer.encode(chosen))) + min(self.model.config.block_size, len(self.tokenizer.encode(rejected)))
                                 loss = torch.stack(losses).mean()
                         loss_value=loss.detach().float().item()
@@ -368,7 +368,7 @@ class Trainer:
         version_tag = version_tag or f'{self.mode}-{self.run_id}-s{self.step}'
         name = version_tag + '.pt'
         path = self.directory / name
-        payload = {'model_config': asdict(self.model.config), 'tokenizer_state': self.tokenizer.state(),
+        payload = {'model_config': export_config(self.model.config), 'tokenizer_state': self.tokenizer.state(),
                    'model_state_dict': self._model_state_for_checkpoint(), 'optimizer_state_dict': self._cpu_tree(self.optimizer.state_dict()),
                    'step': self.step, 'val_loss': self.val_loss, 'version_tag': version_tag,
                    'training_config': self.config, 'mode': self.mode, 'run_id': self.run_id,
@@ -419,7 +419,11 @@ class Trainer:
                     group['foreach'] = False
             self.step, self.val_loss, self.config = payload['step'], payload['val_loss'], payload.get('training_config', {})
             self.run_id, self.mode = payload.get('run_id'), payload.get('mode', 'pretrain')
-            self._configure_precision({**self.config,'precision':'auto'},payload.get('scaler_state_dict'))
+            restored='auto'
+            if self.config.get('precision')=='bfloat16':
+                native=bool(str(self.device).startswith('cuda') and torch.cuda.get_device_capability(self.device)[0]>=8 and torch.cuda.is_bf16_supported())
+                restored='bfloat16' if native else 'float32'
+            self._configure_precision({**self.config,'precision':restored},payload.get('scaler_state_dict'))
             self.metrics = [json.loads(row['payload']) for row in self.store.rows('SELECT payload FROM metrics WHERE run_id=? ORDER BY id DESC LIMIT 3000', (self.run_id,))][::-1]
             self.checkpoint, self.state, self.error = name, 'ready', None
             self.target_step = None
@@ -478,7 +482,7 @@ class Trainer:
             return {}
 
     def status(self):
-        return {'imported_pairs': self.imported_pairs(), 'state': self.state, 'device': self.device, 'device_name': device_name(self.device), 'precision':self.precision, 'allow_tf32':self.allow_tf32, 'cuda_device_count':torch.cuda.device_count() if str(self.device).startswith('cuda') else 0, 'training_gpus':self.training_gpus, 'step': self.step, 'target_step': self.target_step, 'mode': self.mode,
+        return {'imported_pairs': self.imported_pairs(), 'state': self.state, 'device': self.device, 'device_name': device_name(self.device), 'precision':self.precision, 'bf16_supported':bool(str(self.device).startswith('cuda') and torch.cuda.get_device_capability(self.device)[0]>=8 and torch.cuda.is_bf16_supported()), 'allow_tf32':self.allow_tf32, 'cuda_device_count':torch.cuda.device_count() if str(self.device).startswith('cuda') else 0, 'training_gpus':self.training_gpus, 'step': self.step, 'target_step': self.target_step, 'mode': self.mode,
                 'run_id': self.run_id, 'checkpoint': self.checkpoint, 'error': self.error, 'val_loss': self.val_loss,
                 'parameters': sum(p.numel() for p in self.model.parameters()) if self.model else 0,
                 'model_config': asdict(self.model.config) if self.model else None, 'config': self.config,

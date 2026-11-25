@@ -1,10 +1,11 @@
 """A decoder-only GPT, with every architectural component visible in PyTorch."""
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from types import SimpleNamespace
 import math
 import torch
 from torch import nn
 from torch.nn import functional as F
+from .moe import SparseMoE
 
 PRESETS = {
     'Nano': dict(n_layer=4, n_head=4, n_embd=128, block_size=128, dropout=0.1),
@@ -17,8 +18,26 @@ MAX_PARAMETERS = 999_999_999
 def parameter_count(config):
     """Exact unique parameter count, including biases and tied token embeddings."""
     width = config.n_embd
-    return ((config.vocab_size + config.block_size) * width
-            + config.n_layer * (12 * width * width + 13 * width) + 2 * width)
+    if getattr(config,'architecture','dense')=='moe':
+        experts=getattr(config,'n_experts',4)
+        block=4*width*width+8*width+experts*width+experts*(8*width*width+5*width)
+    else:block=12*width*width+13*width
+    return (config.vocab_size+config.block_size)*width+config.n_layer*block+2*width
+
+
+def export_config(config):
+    values=asdict(config)
+    if config.architecture=='dense':
+        for key in ('architecture','n_experts','experts_per_token','router_aux_loss','router_z_loss'):values.pop(key)
+    return values
+
+
+def active_parameter_count(config):
+    total=parameter_count(config)
+    if getattr(config,'architecture','dense')=='moe':
+        total-=config.n_layer*(config.n_experts-config.experts_per_token)*(8*config.n_embd**2+5*config.n_embd)
+    return total
+
 
 
 def resolve_model(preset, dimensions, vocab_size, target_parameters=None):
@@ -84,6 +103,11 @@ class ModelConfig:
     n_embd: int = 128
     block_size: int = 128
     dropout: float = 0.1
+    architecture: str = 'dense'
+    n_experts: int = 4
+    experts_per_token: int = 2
+    router_aux_loss: float = 0.01
+    router_z_loss: float = 0.001
 
     def __post_init__(self):
         if self.vocab_size < 2 or min(self.n_layer, self.n_head, self.n_embd, self.block_size) < 1:
@@ -92,6 +116,11 @@ class ModelConfig:
             raise ValueError('Embedding width must be divisible by the number of heads.')
         if not 0 <= self.dropout <= 0.8:
             raise ValueError('Dropout must be between 0 and 0.8.')
+        if self.architecture not in ('dense','moe'):raise ValueError('Architecture must be dense or moe.')
+        if self.architecture=='moe' and (not 2<=self.n_experts<=64 or not 1<=self.experts_per_token<=self.n_experts):
+            raise ValueError('Use 2–64 experts and 1–n_experts experts per token.')
+        if not 0<=self.router_aux_loss<=1 or not 0<=self.router_z_loss<=1:
+            raise ValueError('Router loss coefficients must be between 0 and 1.')
         count = parameter_count(self)
         if count > MAX_PARAMETERS:
             raise ValueError(f'Model has {count:,} parameters. Choose fewer than 1,000,000,000.')
@@ -132,13 +161,17 @@ class Block(nn.Module):
         self.ln1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln2 = nn.LayerNorm(config.n_embd)
-        self.mlp = nn.Sequential(nn.Linear(config.n_embd, 4 * config.n_embd), nn.GELU(),
+        self.moe = config.architecture=='moe'
+        self.mlp = SparseMoE(config) if self.moe else nn.Sequential(nn.Linear(config.n_embd, 4 * config.n_embd), nn.GELU(),
                                  nn.Linear(4 * config.n_embd, config.n_embd), nn.Dropout(config.dropout))
 
     def forward(self, x, inspect=False):
         update, attention = self.attn(self.ln1(x), inspect)
         x = x + update
-        return x + self.mlp(self.ln2(x)), attention
+        update=self.mlp(self.ln2(x))
+        if self.moe:update,auxiliary=update
+        else:auxiliary=x.new_zeros((),dtype=torch.float32)
+        return x+update,attention,auxiliary
 
 
 class GPT(nn.Module):
@@ -168,13 +201,18 @@ class GPT(nn.Module):
         positions = torch.arange(time, device=ids.device)
         x = self.dropout(self.token_embedding(ids) + self.position_embedding(positions))
         attentions = []
+        auxiliaries = []
         for block in self.blocks:
-            x, weights = block(x, inspect)
+            x, weights, auxiliary = block(x, inspect)
+            auxiliaries.append(auxiliary)
             if inspect:
                 attentions.append(weights)
         logits = self.lm_head(self.norm(x))
         loss = None if targets is None else F.cross_entropy(logits.float().reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
-        return {'logits': logits, 'loss': loss, 'attentions': attentions}
+        auxiliary=torch.stack(auxiliaries).mean()
+        lm_loss=loss
+        if loss is not None and self.training:loss=loss+auxiliary
+        return {'logits': logits, 'loss': loss, 'lm_loss':lm_loss, 'aux_loss':auxiliary, 'attentions': attentions}
 
     @torch.no_grad()
     def generate(self, ids, max_new_tokens=64, temperature=0.8, top_k=40, telemetry=False, seed=42):

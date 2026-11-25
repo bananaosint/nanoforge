@@ -117,10 +117,12 @@ def completion_batch(tokenizer, prompt, completion, block_size, device):
     return x, y
 
 
-def completion_log_probability(model, tokenizer, prompt, completion, device):
+def completion_log_probability(model, tokenizer, prompt, completion, device, return_aux=False):
     x, y = completion_batch(tokenizer, prompt, completion, model.config.block_size, device)
-    logits = model(x)['logits'].float().log_softmax(-1)
+    output=model(x)
+    logits = output['logits'].float().log_softmax(-1)
     mask = y != -100
     # DPO uses the sum of completion token log probabilities, not a mean.
     selected = logits.gather(-1, y.clamp_min(0).unsqueeze(-1)).squeeze(-1)
-    return (selected * mask).sum(-1)
+    probability=(selected * mask).sum(-1)
+    return (probability,output['aux_loss']) if return_aux else probability

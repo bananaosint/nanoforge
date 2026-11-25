@@ -12,6 +12,11 @@ class Source(StrictModel):
 
 
 class Dimensions(StrictModel):
+    architecture: Literal['dense','moe'] | None = None
+    n_experts: int | None = Field(default=None, ge=2, le=64)
+    experts_per_token: int | None = Field(default=None, ge=1, le=64)
+    router_aux_loss: float | None = Field(default=None, ge=0, le=1)
+    router_z_loss: float | None = Field(default=None, ge=0, le=1)
     n_layer: int | None = Field(default=None, ge=1, lt=1000000000)
     n_head: int | None = Field(default=None, ge=1, lt=1000000000)
     n_embd: int | None = Field(default=None, ge=1, lt=1000000000)

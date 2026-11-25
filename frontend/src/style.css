@@ -79,3 +79,5 @@
 .preset-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.model-sizing{display:flex;flex-direction:column;gap:12px;margin-bottom:18px}.model-sizing .field-pair,.model-sizing .field{margin-bottom:0}.model-sizing>.button{align-self:flex-start}.sizing-note,.parameter-preview{font-size:.75rem;line-height:1.65;color:var(--muted)}.parameter-preview{display:flex;flex-direction:column;padding:12px;border:1px solid var(--line);border-radius:6px;background:#0e1116}.parameter-preview strong{color:var(--green);font-size:.875rem}.parameter-preview small{margin-top:6px}.sizing-error{font-size:.75rem;color:#eeb4a5;overflow-wrap:anywhere}
 
 .tf32-control{display:flex;align-items:flex-start;gap:8px;font-size:.75rem;color:var(--muted);line-height:1.5}.tf32-control input{width:auto;margin-top:3px;accent-color:var(--green)}
+
+fieldset.config-content{border:0;margin:0;min-width:0}

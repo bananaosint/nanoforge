@@ -9,7 +9,7 @@ import threading
 import time
 import torch
 from torch.nn import functional as F
-from .model import GPT, ModelConfig, parameter_count
+from .model import GPT, ModelConfig, parameter_count, export_config
 from .tokenizer import Tokenizer
 from .dataset import WeightedMixer, completion_batch
 from .corpus import FileCorpus, PairPool
@@ -97,7 +97,7 @@ def export_checkpoint(model,tokenizer,optimizer,plan,step,val_loss,world_size):
     embedding=state['token_embedding.weight'].detach().float().cpu()
     weights={name:embedding if name in ('token_embedding.weight','lm_head.weight') else tensor.detach().float().cpu()
              for name,tensor in state.items()}
-    payload={'model_config':asdict(model.config),'tokenizer_state':tokenizer.state(),
+    payload={'model_config':export_config(model.config),'tokenizer_state':tokenizer.state(),
              'model_state_dict':weights,'optimizer_state_dict':cpu_tree(optimizer.state_dict()),
              'step':step,'val_loss':val_loss,'version_tag':tag,'training_config':plan['config'],
              'mode':plan['config']['mode'],'run_id':plan['run_id'],'precision':plan['config']['precision'],

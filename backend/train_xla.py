@@ -59,6 +59,7 @@ def prepare(config,home,resume=None,seed=42,expected_replicas=0,log_every=10,kee
     else:
         tokenizer=Tokenizer(config['tokenizer'],vocabulary_text(texts) if config['tokenizer']=='char' else '')
         model=resolve_model(config['preset'],config.get('model',{}),tokenizer.vocab_size)
+    if model.architecture=='moe':raise ValueError('MoE is not supported by the TPU/XLA trainer. Use the CPU/CUDA Studio.')
     # Prepare shared uint16/uint32 token arrays and pair indexes in the parent.
     if config['mode']=='pretrain' or (config['mode']=='sft' and config['base_mix']>0):
         WeightedMixer(texts,tokenizer,model.block_size,'cpu')

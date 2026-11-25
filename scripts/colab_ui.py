@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import runpy
 import shutil
 import signal
 import socket
@@ -108,7 +109,8 @@ def start_server(repo,home,port=8000,device='cuda',profile='colab-l4',timeout=60
 
 
 def gpu_check(profile):
-    if profile not in ('colab-l4','colab-a100'):raise ValueError('Choose colab-l4 or colab-a100.')
+    if profile not in ('colab-l4','colab-a100','colab-g4'):raise ValueError('Choose colab-l4, colab-a100 or colab-g4.')
+    if profile=='colab-g4':return None
     gpu='A100' if profile=='colab-a100' else 'L4'
     return f'''
 import torch
@@ -123,7 +125,7 @@ print('PyTorch:',torch.__version__,'| CUDA:',torch.version.cuda,flush=True)
 
 def launch_studio(repo='/content/nanoforge',home=None,port=8000,profile='colab-l4'):
     check=gpu_check(profile)
-    if home is None:home='/content/nanoforge-'+('a100' if profile=='colab-a100' else 'l4')+'-run'
+    if home is None:home='/content/nanoforge-'+('g4' if profile=='colab-g4' else 'a100' if profile=='colab-a100' else 'l4')+'-run'
     repo,home=Path(repo).resolve(),Path(home).resolve()
     temporary=home/'install-tmp';temporary.mkdir(parents=True,exist_ok=True)
     env={**os.environ,'PIP_NO_CACHE_DIR':'1','TMPDIR':str(temporary),'NANOFORGE_DEVICE':'cuda',
@@ -131,8 +133,12 @@ def launch_studio(repo='/content/nanoforge',home=None,port=8000,profile='colab-l
     def run(*args,cwd=repo):subprocess.run(list(args),cwd=cwd,env=env,check=True)
     print('Installing Python dependencies and checking the selected Colab GPU...',flush=True)
     run(sys.executable,'-m','pip','install','--no-cache-dir','-r','backend/requirements.txt')
-    run(sys.executable,'-c',check)
+    if profile=='colab-g4':
+        runpy.run_path(str(repo/'scripts/blackwell.py'))['ensure_blackwell'](repo,env)
+    else:run(sys.executable,'-c',check)
     run(sys.executable,'-m','pytest','backend/tests/test_expanded.py::test_cuda_fp16_training_and_cpu_studio_export','-q')
+    if profile=='colab-g4':
+        run(sys.executable,'-m','pytest','backend/tests/test_moe.py::test_cuda_moe_training_export','-q')
     print('Building the NanoForge web interface...',flush=True)
     env=node_environment(temporary/'node',env)
     run('npm','ci',cwd=repo/'frontend')

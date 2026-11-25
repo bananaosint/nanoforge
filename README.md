@@ -127,6 +127,12 @@ Import [the Kaggle TPU notebook](notebooks/NanoForge_Kaggle_TPU.ipynb) into Kagg
 
 This is data parallel training: each core holds a full model; core memories are not pooled. The separate `python -m backend.train_xla` CLI supports pretraining, SFT and DPO. The local Studio server remains on CPU/CUDA/MPS/XPU. See [Kaggle setup, resume and memory details](docs/kaggle-tpu.md). Actual TPU kernels require the notebook's hardware test; development checks here run on CPU.
 
+## Colab G4 Blackwell + Mixture of Experts
+
+[Open the G4 Studio notebook](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_G4.ipynb), select the RTX PRO 6000 Blackwell accelerator, and run the launcher cell. It verifies the assigned GPU and real CUDA kernels, preserves a compatible stack or attempts one pinned PyTorch 2.10.0 / CUDA 12.8 repair, runs dense/MoE export smoke tests, then displays the UI. Startup is idle; all model/data/training settings remain in the UI.
+
+The conservative G4 defaults are Dense Mini, Magic 8k, CUDA BF16, TF32, context 512, batch 32 and accumulation 2. Select **Mixture of Experts (MoE)** under Architecture for learned top-k expert MLPs with balancing/z-loss controls. Total parameters include every expert and stay below one billion. Dense legacy checkpoints still load, and updated Studio supports portable MoE exports/resume. See [G4 setup](docs/colab-g4.md) and [MoE design/limits](docs/moe.md). MoE is currently a CPU/CUDA reference implementation, not an expert-sharded/fused kernel or TPU feature.
+
 ## Colab A100 GPU — full Studio UI
 
 [Open the A100 Studio notebook](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_A100.ipynb). Select **A100 GPU** and run the launcher cell. It installs the Python/frontend dependencies, checks the actual GPU, runs CUDA checkpoint smoke tests and displays the full UI below the cell through Colab's notebook proxy. Model size, datasets and all training settings stay in the UI; startup does not import data or start training.
