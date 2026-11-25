@@ -1,8 +1,8 @@
 # Dataset catalog and large imports
 
-The Data & Mixer panel contains 22 sources. Select sources with their checkboxes, choose a full training split or a 1,000/10,000-source-row sample, and click **Import selected**. Each card also has individual **Import full** and **Sample 1,000** controls. Chinese R1 remains excluded from the default catalog. The ZeroGPU Gradio adapter exposes the same source catalog for bounded 1,000-source-row CPU samples, subject to its separate 20 MiB preparation limit; full imports remain in Studio/CLI.
+The Data & Mixer panel contains 26 sources. Select sources with their checkboxes, choose a full training split or a 1,000/10,000-source-row sample, and click **Import selected**. Each card also has individual **Import full** and **Sample 1,000** controls. Chinese R1 remains excluded from the default catalog. The ZeroGPU Gradio adapter exposes the same source catalog for bounded 1,000-source-row CPU samples, subject to its separate 20 MiB preparation limit; full imports remain in Studio/CLI.
 
-Cosmopedia v2 and Wikipedia begin unselected because full downloads are large. DailyDialog begins unselected because the supplied repository is currently inaccessible. The cards remain visible, so none of the requested sources is silently replaced or hidden.
+Cosmopedia v2, Wikipedia, FineWeb-Edu 10BT and FineMath 4+ begin unselected because full downloads are large. DailyDialog begins unselected because the supplied repository is currently inaccessible. The cards remain visible, so none of the requested sources is silently replaced or hidden.
 
 | Import ID | Repository / configuration | Normalization |
 | --- | --- | --- |
@@ -23,8 +23,14 @@ Cosmopedia v2 and Wikipedia begin unselected because full downloads are large. D
 | tulu-3-sft-personas-instruction-following | allenai/tulu-3-sft-personas-instruction-following / default | Same chat conversion; original prompt, example ID and constraints retained. |
 | tulu-3-sft-personas-algebra | allenai/tulu-3-sft-personas-algebra / default | Exact requested sft-personas-algebra repository, retaining prompt/ID metadata; no substitution with similarly named datasets. |
 | codealpaca-20k | HuggingFaceH4/CodeAlpaca_20K / default | Existing prompt → completion; whitespace/indentation preserved. Only H4's train split is imported; its held-out test split stays excluded. |
+| fineweb-edu-10bt | HuggingFaceFW/fineweb-edu / sample-10BT | The requested sample/10BT directory maps to sample-10BT/train. Import document text with URLs, quality scores and other source fields under source_metadata. Excludes the full corpus and other sample sizes. |
+| cosmopedia-100m | krisbailey/cosmopedia-100M / default | Exact requested 100M-token repository; text plus original fields under source_metadata. Distinct from the existing Cosmopedia v2 source. Samples explicitly download its 350 MB shard to disk before limiting normalized rows. |
+| finemath-4plus | HuggingFaceTB/finemath / finemath-4plus | Corrects the supplied maim branch typo to main; imports only finemath-4plus/train. Text plus scores, crawl/URL and original metadata under source_metadata. No 3plus or InfiWebMath configurations are mixed in. |
+| tinystories-original | roneneldan/TinyStories / default | Original train split as text. Excludes validation and GPT-4-only alternative files. Separate from the existing tinystories ID, which remains TinyStoriesInstruct. |
 
 The original `tinystories`, `hh-rlhf`, `oasst1`, `no-robots`, and `goat` IDs continue to work. Only original training splits are imported. Wikipedia explicitly selects English; SmolLM explicitly selects Cosmopedia v2, not the other SmolLM corpus configurations.
+
+The four newest sources are **pretraining text**, contributing zero SFT/DPO pairs. Their original text, whitespace and Unicode are preserved. Extra source fields are nested under `source_metadata`, so a metadata prompt/answer cannot accidentally become an instruction target or overwrite repository/row provenance. Only their selected train configurations are downloaded, using the same revision pinning and resumable shards as existing sources. Cosmopedia 100M has an explicit disk-backed sampling exception described below.
 
 The Tulu mixture includes persona material and other sources also available separately in the catalog. Imports preserve repository identity and do not deduplicate across corpora: weighting a mixture alongside its components can repeat examples. Choose weights accordingly. Multi-turn rows produce one example per assistant response, without later turns leaking into earlier prompts. Code is imported as text and never executed. Malformed conversations are held in the existing review file before any examples from that row are emitted.
 
@@ -32,9 +38,13 @@ The Tulu mixture includes persona material and other sources also available sepa
 
 At the verified revisions, Cosmopedia v2 has 104 Parquet shards totaling **122,361,137,711 compressed bytes**. English Wikipedia has 41 shards totaling **11,630,929,031 compressed bytes**. Lichess is approximately 885 MB compressed. Normalized JSONL and token caches require additional space; compressed size is not the final training footprint.
 
-The six new train sources total approximately 3.55 GB compressed: SmolTalk `all` 2,008,727,125 bytes (9 shards); Tulu mixture 1,412,954,868 bytes (6 shards); grade math 51,970,185 bytes; instruction following 39,171,921 bytes; algebra 36,167,938 bytes; H4 CodeAlpaca 3,008,277 bytes. These are metadata sizes for full train splits, not amounts downloaded by a sample. Normalizing multi-turn conversations repeats context for each target and can expand the final output.
+The six instruction/chat additions total approximately 3.55 GB compressed: SmolTalk `all` 2,008,727,125 bytes (9 shards); Tulu mixture 1,412,954,868 bytes (6 shards); grade math 51,970,185 bytes; instruction following 39,171,921 bytes; algebra 36,167,938 bytes; H4 CodeAlpaca 3,008,277 bytes. These are metadata sizes for full train splits, not amounts downloaded by a sample. Normalizing multi-turn conversations repeats context for each target and can expand the final output.
 
-Full imports now download, process and release **one Parquet shard at a time**, with a durable row checkpoint before deleting each completed shard. Resume skips committed shards using recorded row counts. OASST's small parent index and original raw dialogue sources have separate parsing paths. Samples use bounded HTTP byte-range reads to fetch real rows from the same pinned Parquet revision as full imports, without depending on the public viewer or its truncation limits. Samples never silently become full downloads. A server that ignores byte ranges produces a clear error instead of downloading a massive file into RAM.
+The newest pretraining subsets have these full train sizes: FineWeb-Edu `sample-10BT` **28,518,193,415 compressed bytes** (14 shards); Cosmopedia 100M **349,554,113 bytes** (1 shard); FineMath `finemath-4plus` **18,365,184,633 bytes** (64 shards); original TinyStories **990,786,315 bytes** (4 shards). The 10BT name means approximately ten billion tokens, not a tiny preview. JSONL, retained metadata and token caches need additional disk space. Use the row-limited sample controls before choosing a full download.
+
+Full imports now download, process and release **one Parquet shard at a time**, with a durable row checkpoint before deleting each completed shard. Resume skips committed shards using recorded row counts. OASST's small parent index and original raw dialogue sources have separate parsing paths. Most Parquet samples use bounded HTTP byte-range reads to fetch real rows from the same pinned Parquet revision as full imports, without depending on the public viewer or its truncation limits. A server that ignores byte ranges produces a clear error instead of downloading a massive file into RAM.
+
+**Cosmopedia 100M sampling exception:** its large Parquet row group exceeds the range reader's 128 MiB single-read limit, and its public row viewer returned HTTP 500 during verification. Its catalog card explicitly states that sampling downloads the 349,554,113-byte shard to disk first, reads only the requested rows with Arrow batches, and removes the shard after successful finalization. Interrupted downloads can resume. This avoids constructing a huge joined HTTP-range buffer in Python; Arrow still needs memory to decode the row group. Source-row limits constrain normalized output, not this source's transfer size. The same exception is explained beside the ZeroGPU sample controls. Other sources retain the existing bounded-range guard.
 
 Only finalized UTF-8 files enter the mixer. Interrupted output remains under `data/.imports/`; resume truncates uncommitted bytes, preserving a duplicate-free committed prefix. A completed sample can be upgraded to a full import. The sample file remains available separately; select the sample or full corpus in the mixer rather than unintentionally weighting both copies.
 
@@ -64,6 +74,12 @@ Altered Riddles is a benchmark. If used for training, it is no longer an indepen
 .venv/bin/python -m backend.importers --dataset tulu-3-sft-personas-algebra
 .venv/bin/python -m backend.importers --dataset codealpaca-20k
 
+# Requested pretraining subsets; a sample does not download the entire corpus
+.venv/bin/python -m backend.importers --dataset fineweb-edu-10bt --max-records 1000
+.venv/bin/python -m backend.importers --dataset finemath-4plus --max-records 1000
+.venv/bin/python -m backend.importers --dataset cosmopedia-100m
+.venv/bin/python -m backend.importers --dataset tinystories-original
+
 # Upgrade the completed sample to the full corpus only when you intend the large download
 .venv/bin/python -m backend.importers --dataset cosmopedia-v2
 ```
@@ -73,3 +89,5 @@ Altered Riddles is a benchmark. If used for training, it is no longer an indepen
 See `expanded-import-verification.json` for real-source checks and their scope. Large corpora were sampled, not downloaded in full in the development workspace.
 
 See `instruction-import-verification.json` for live pinned-Parquet checks of the six new repositories. Tests also exercise split/config selection, assistant-turn boundaries, code whitespace, invalid-row review, uint16 pretraining caches and SFT pair indexing through the full import pipeline.
+
+See `pretraining-import-verification.json` for live samples of the four newest sources, including the Cosmopedia disk-backed path. Tests cover both full-shard and row-limited paths, exact train subset selection, temporary-shard cleanup, source metadata, invalid-text review, uint16 caches and usable pretraining batches with no fabricated SFT/DPO pairs.

@@ -58,7 +58,7 @@ The exporter requires a separate empty destination and includes bundled tokenize
 
 ## Use the UI
 
-1. Upload a UTF-8 `.txt` / normalized `.jsonl`, or choose a source from **Direct dataset download** and click **Import dataset sample** for up to 1,000 source rows on CPU. The picker includes the Studio catalog (SmolTalk, Tulu and CodeAlpaca included); Dolly is the default. The prepared dataset must still fit the 20 MiB limit. The bundled starter corpus is available immediately.
+1. Upload a UTF-8 `.txt` / normalized `.jsonl`, or choose a source from **Direct dataset download** and click **Import dataset sample** for up to 1,000 source rows on CPU. The picker includes the Studio catalog; Dolly is the default. Cosmopedia 100M samples first download a 350 MB temporary shard to disk because of its large row group; other Parquet samples use bounded byte ranges. The prepared dataset must still fit the 20 MiB limit. The bundled starter corpus is available immediately.
 2. Choose settings and click **Create / import session on CPU**. To continue a previous session after restart, upload its `.pt` and matching tokenizer. For SFT, JSONL needs `prompt`/`completion`; DPO needs `prompt`/`chosen`/`rejected`.
 3. Click **Train next chunk**. The completed chunk reports absolute step, loss, precision and elapsed time; download its checkpoint. Repeated clicks resume model and optimizer from files shared between the short-lived GPU workers. Each DPO chunk begins a new pass with a fresh frozen reference, as a normal Studio checkpoint resume does.
 4. Click **Generate with current checkpoint** for a separate short GPU request.

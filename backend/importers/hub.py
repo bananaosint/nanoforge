@@ -287,6 +287,26 @@ class HubImports:
         self.update(key,raw_source=url,variant='train_self_original' if key=='persona-chat' else 'original Cornell archive')
         return (lambda:islice(factory(),limit) if limit else factory()),[path]
 
+    def _disk_sample_rows(self,key,shards,folder,limit,files):
+        """Explicit catalog opt-in for a source with an oversized Parquet row group.
+
+        Download to disk, never join hundreds of MB of HTTP ranges in Python.
+        Only requested rows are normalized; successful imports remove the shard.
+        """
+        from itertools import islice
+        remaining=limit
+        for index,shard in enumerate(shards):
+            if remaining<=0:return
+            path=self._download(key,shard['url'],folder/f'shard-{index}.parquet',shard['size'])
+            files.append(path)
+            iterator=self._rows([path])
+            try:
+                for row in islice(iterator,remaining):
+                    if self.cancel.is_set():raise InterruptedError()
+                    remaining-=1
+                    yield row
+            finally:iterator.close()
+
     def _import(self, key):
         definition=BY_ID[key]
         job=self.jobs[key]
@@ -343,6 +363,9 @@ class HubImports:
                     shard['url']=shard['url'].replace('resolve/refs%2Fconvert%2Fparquet/','resolve/'+converted+'/')
                 self.update(key,parquet_revision=converted,parquet_sources=[{'url':s['url'],'size':s['size']} for s in shards],download_bytes=sum(s['size'] for s in shards),shard_count=len(shards))
                 rows=lambda:self._sample_rows(definition['repo'],limit,config,shards)
+                if limit and definition.get('sample_download_shard'):
+                    self.update(key,sample_method='disk-backed shard',note='This source sample downloads its Parquet shard to disk before reading the requested rows.')
+                    rows=lambda:self._disk_sample_rows(key,shards,folder,limit,files)
                 if key=='oasst1' and not limit:
                     files=[self._download(key,s['url'],folder/f'shard-{i}.parquet',s['size']) for i,s in enumerate(shards)]
                     rows=lambda:self._rows(files)

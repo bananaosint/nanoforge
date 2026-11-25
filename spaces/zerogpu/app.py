@@ -61,6 +61,7 @@ Create/import on CPU, then request short GPU training or generation calls. Each 
         checkpoint=gr.File(label='Optional NanoForge checkpoint · max 128 MiB',file_types=['.pt'],type='filepath')
     sample_source=gr.Dropdown([(item['label']+' · '+item['repo'],item['id']) for item in CATALOG],value='dolly',label='Direct dataset download (CPU sample)')
     sample=gr.Button('Import dataset sample (1,000 source rows, CPU)')
+    gr.Markdown('Cosmopedia 100M samples first download a **350 MB temporary Parquet shard** because of its large row group. Other Parquet sources use bounded byte-range samples. Prepared datasets must fit 20 MiB.')
     gr.Markdown('Settings below apply when you **create/import a session**. Import your latest checkpoint to resume with a different objective, batch or learning rate. The chunk-length control applies to each training click.')
     with gr.Row():
         mode=gr.Dropdown(['pretrain','sft','dpo'],value='pretrain',label='Training objective')

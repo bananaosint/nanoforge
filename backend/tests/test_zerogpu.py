@@ -120,7 +120,8 @@ assert app.SIZE=='large'
 choices={value for label,value in app.sample_source.choices}
 assert {'smoltalk','tulu-3-sft-mixture','tulu-3-sft-personas-math-grade',
         'tulu-3-sft-personas-instruction-following','tulu-3-sft-personas-algebra',
-        'codealpaca-20k'}<=choices
+        'codealpaca-20k','fineweb-edu-10bt','cosmopedia-100m',
+        'finemath-4plus','tinystories-original'}<=choices
 print('Gradio UI built without CUDA initialization')
 """
     result=subprocess.run([sys.executable,'-c',code],cwd=bundle,text=True,capture_output=True,timeout=60,

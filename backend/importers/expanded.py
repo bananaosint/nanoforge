@@ -19,8 +19,13 @@ EXTRA_CATALOG = [
     {'id':'tulu-3-sft-personas-instruction-following','repo':'allenai/tulu-3-sft-personas-instruction-following','label':'Tulu 3 Personas · Instruction Following','kind':'sft','size':'39 MB compressed','license':'ODC-BY','note':'Instruction constraints are retained as metadata. Overlaps the Tulu mixture.'},
     {'id':'tulu-3-sft-personas-algebra','repo':'allenai/tulu-3-sft-personas-algebra','label':'Tulu 3 Personas · Algebra','kind':'sft','size':'36 MB compressed','license':'See source card','note':'Uses the exact requested sft-personas-algebra repository; no similarly named dataset is substituted.'},
     {'id':'codealpaca-20k','repo':'HuggingFaceH4/CodeAlpaca_20K','label':'CodeAlpaca 20K','kind':'sft','size':'3 MB compressed','license':'CC · see source card','note':'Imports the H4 training split only. Preserves code whitespace; never executes downloaded code.'},
+    {'id':'fineweb-edu-10bt','repo':'HuggingFaceFW/fineweb-edu','config':'sample-10BT','label':'FineWeb-Edu · 10BT','kind':'text','size':'28.5 GB compressed','license':'ODC-BY','massive':True,'note':'Only sample/10BT (sample-10BT/train), not the full FineWeb-Edu corpus. Text and original document metadata are preserved.'},
+    {'id':'cosmopedia-100m','repo':'krisbailey/cosmopedia-100M','label':'Cosmopedia · 100M','kind':'text','size':'350 MB compressed','license':'ODC-BY','sample_download_shard':True,'note':'Exact 100M-token repository, separate from Cosmopedia v2. Samples also download its 350 MB Parquet shard to disk because of its large row group; only the requested rows are normalized.'},
+    {'id':'finemath-4plus','repo':'HuggingFaceTB/finemath','config':'finemath-4plus','label':'FineMath · 4+','kind':'text','size':'18.4 GB compressed','license':'ODC-BY','massive':True,'note':'Only finemath-4plus/train from main; excludes FineMath-3+ and InfiWebMath variants. Original text, quality scores and document metadata are preserved.'},
+    {'id':'tinystories-original','repo':'roneneldan/TinyStories','label':'TinyStories · Original','kind':'text','size':'991 MB compressed','license':'CDLA-Sharing 1.0','note':'Original default/train, separate from TinyStories Instruct. Excludes validation and GPT-4-only alternative files.'},
 ]
 EXTRA_IDS = {item['id'] for item in EXTRA_CATALOG}
+PRETRAINING_IDS = {'fineweb-edu-10bt','cosmopedia-100m','finemath-4plus','tinystories-original'}
 CHAT_IDS = {'smoltalk','tulu-3-sft-mixture','tulu-3-sft-personas-math-grade',
             'tulu-3-sft-personas-instruction-following','tulu-3-sft-personas-algebra'}
 
@@ -72,6 +77,15 @@ def conversation_pairs(messages,**metadata):
 
 
 def normalize_extra(key,row):
+    if key in PRETRAINING_IDS:
+        if not isinstance(row.get('text'),str) or not row['text'].strip():
+            raise ValueError('Pretraining record needs nonempty text.')
+        # Keep source fields without interpreting metadata prompts/answers as SFT
+        # or overwriting the importer's own source/source_row provenance.
+        record={'text':row['text']}
+        metadata={name:value for name,value in row.items() if name!='text'}
+        if metadata:record['source_metadata']=metadata
+        return record
     if key in CHAT_IDS:
         metadata={}
         for source,target in (('id','example_id'),('source','source_subset'),('constraints','constraints'),('prompt','original_prompt')):
