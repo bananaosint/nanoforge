@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import platform
 import re
-import runpy
 import shutil
 import signal
 import socket
@@ -108,22 +107,37 @@ def start_server(repo,home,port=8000,device='cuda',profile='colab-l4',timeout=60
     raise RuntimeError('Studio startup timed out:\n'+session.logs())
 
 
-def launch_studio(repo='/content/nanoforge',home='/content/nanoforge-l4-run',port=8000):
+def gpu_check(profile):
+    if profile not in ('colab-l4','colab-a100'):raise ValueError('Choose colab-l4 or colab-a100.')
+    gpu='A100' if profile=='colab-a100' else 'L4'
+    return f'''
+import torch
+assert torch.cuda.is_available(), 'Select a {gpu} GPU in Colab Runtime settings.'
+name=torch.cuda.get_device_name(0)
+assert {gpu!r} in name.upper().replace('-',' ').split(), f'Expected {gpu}, got {{name}}. Change the Colab accelerator.'
+assert torch.cuda.get_device_capability(0)[0]>=8, 'A recent CUDA GPU/PyTorch installation is required.'
+print('GPU:',name,'| VRAM:',round(torch.cuda.get_device_properties(0).total_memory/1024**3,1),'GiB',flush=True)
+print('PyTorch:',torch.__version__,'| CUDA:',torch.version.cuda,flush=True)
+'''
+
+
+def launch_studio(repo='/content/nanoforge',home=None,port=8000,profile='colab-l4'):
+    check=gpu_check(profile)
+    if home is None:home='/content/nanoforge-'+('a100' if profile=='colab-a100' else 'l4')+'-run'
     repo,home=Path(repo).resolve(),Path(home).resolve()
     temporary=home/'install-tmp';temporary.mkdir(parents=True,exist_ok=True)
     env={**os.environ,'PIP_NO_CACHE_DIR':'1','TMPDIR':str(temporary),'NANOFORGE_DEVICE':'cuda',
          'npm_config_cache':str(temporary/'npm-cache')}
     def run(*args,cwd=repo):subprocess.run(list(args),cwd=cwd,env=env,check=True)
-    print('Installing Python dependencies and checking the L4 GPU...',flush=True)
+    print('Installing Python dependencies and checking the selected Colab GPU...',flush=True)
     run(sys.executable,'-m','pip','install','--no-cache-dir','-r','backend/requirements.txt')
-    gpu_check=runpy.run_path(str(repo/'scripts/colab_l4.py'))['GPU_CHECK']
-    run(sys.executable,'-c',gpu_check)
+    run(sys.executable,'-c',check)
     run(sys.executable,'-m','pytest','backend/tests/test_expanded.py::test_cuda_fp16_training_and_cpu_studio_export','-q')
     print('Building the NanoForge web interface...',flush=True)
     env=node_environment(temporary/'node',env)
     run('npm','ci',cwd=repo/'frontend')
     run('npm','run','build',cwd=repo/'frontend')
-    session=start_server(repo,home,port)
+    session=start_server(repo,home,port,profile=profile)
     print('Studio is ready. Choose datasets and settings in the UI, then click Start training.',flush=True)
     return session
 

@@ -127,6 +127,12 @@ Import [the Kaggle TPU notebook](notebooks/NanoForge_Kaggle_TPU.ipynb) into Kagg
 
 This is data parallel training: each core holds a full model; core memories are not pooled. The separate `python -m backend.train_xla` CLI supports pretraining, SFT and DPO. The local Studio server remains on CPU/CUDA/MPS/XPU. See [Kaggle setup, resume and memory details](docs/kaggle-tpu.md). Actual TPU kernels require the notebook's hardware test; development checks here run on CPU.
 
+## Colab A100 GPU — full Studio UI
+
+[Open the A100 Studio notebook](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_A100.ipynb). Select **A100 GPU** and run the launcher cell. It installs the Python/frontend dependencies, checks the actual GPU, runs CUDA checkpoint smoke tests and displays the full UI below the cell through Colab's notebook proxy. Model size, datasets and all training settings stay in the UI; startup does not import data or start training.
+
+The A100 profile uses Mini, Magic 8k, FP16 + GradScaler, TF32, context 512, batch 64 and accumulation 1. Caches remain uint16 when IDs fit, and `.pt` files retain portable CPU FP32 weights. Use smaller batches for larger Custom models. These defaults are a starting point, not an A100 benchmark. See [A100 setup and storage](docs/colab-a100.md).
+
 ## Colab L4 GPU — full Studio UI
 
 [Open the L4 Studio notebook](https://colab.research.google.com/github/bananaosint/nanoforge/blob/main/notebooks/NanoForge_L4.ipynb). Select **L4 GPU** and run its launcher cell. It verifies CUDA, builds the frontend and displays the complete Studio below the cell through Colab's notebook proxy. **Model size, datasets, hyperparameters, training controls, feedback and checkpoint downloads are in the UI.** Startup leaves training idle and imports no corpora automatically.

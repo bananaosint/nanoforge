@@ -29,7 +29,7 @@ def create_app(root=None):
     trainer = Trainer(datasets, store, root / 'checkpoints')
     imports = HubImports(datasets)
     profile = os.environ.get('NANOFORGE_UI_PROFILE', '')
-    if profile not in ('', 'colab-l4', 'kaggle-t4x2'):
+    if profile not in ('', 'colab-l4', 'colab-a100', 'kaggle-t4x2'):
         raise ValueError('Unknown UI profile.')
     defaults = None
     if profile:
@@ -66,7 +66,7 @@ def create_app(root=None):
             if not options['datasets']:
                 options['datasets'] = [{'name': 'starter-sample.txt', 'weight': 100}]
         return {'environment': 'kaggle' if profile=='kaggle-t4x2' else ('colab' if profile else 'local'),
-                'label': 'Kaggle T4 ×2' if profile=='kaggle-t4x2' else ('Colab L4' if profile else 'Local'),
+                'label': 'Kaggle T4 ×2' if profile=='kaggle-t4x2' else ('Colab A100' if profile=='colab-a100' else ('Colab L4' if profile else 'Local')),
                 'transport': 'poll' if profile else 'websocket', 'defaults': options}
 
     @app.get('/api/status')
