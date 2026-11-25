@@ -29,6 +29,7 @@ class Training(StrictModel):
     mode: Literal['pretrain', 'sft', 'dpo'] = 'pretrain'
     precision: Literal['auto','float32','float16','bfloat16'] = 'auto'
     allow_tf32: bool = False
+    multi_gpu: bool = False
     datasets: list[Source] = Field(default_factory=lambda: [Source(name='starter-sample.txt', weight=100)])
     max_steps: int = Field(default=250, ge=1, le=1000000)
     learning_rate: float = Field(default=0.0003, gt=0, le=0.1)

@@ -117,6 +117,10 @@ Or choose `tinystories`, `hh-rlhf`, `oasst1`, `no-robots`, or `goat` individuall
 
 Stop NanoForge first. Extract the updated ZIP into a temporary folder, then copy its `backend/`, `frontend/`, `examples/`, `package.json`, `start.sh`, and `README.md` into your existing NanoForge folder, replacing code files. Keep your existing `.venv/`, `data/`, `checkpoints/`, and `nanoforge.sqlite3*` files. Run `./start.sh` again: it installs the additional import/translation dependencies without recreating your environment. The ZIP contains no trained checkpoints, user feedback, or full downloaded corpora.
 
+## Kaggle GPU T4 x2 — full Studio UI
+
+Select **GPU T4 x2** and enable **Internet**, then run [the Kaggle dual-T4 notebook](notebooks/NanoForge_Kaggle_T4x2.ipynb). It verifies both devices, runs the real two-GPU smoke tests and opens a temporary password-protected Studio link. All model/dataset/training controls stay in the UI. FP16 training can use both GPUs for pretraining, SFT and DPO; checkpoints remain portable to local Studio. Each GPU holds a complete model replica, so GPU memory is not pooled. See [setup, authentication and memory details](docs/kaggle-t4x2.md).
+
 ## Kaggle TPU x8
 
 Import [the Kaggle TPU notebook](notebooks/NanoForge_Kaggle_TPU.ipynb) into Kaggle, enable Internet, select **TPU x8**, and run its cells. It installs/reuses matching PyTorch/XLA, runs an actual eight-core smoke test, prepares uint16 tokens, trains with **BF16**, and exports Studio-compatible CPU `.pt` weights. `configs/kaggle-tpu.json` uses Mini, batch 4 per core, accumulation 2 (effective batch 64). Use `preset: "Custom"` for larger architectures below one billion parameters.

@@ -17,6 +17,7 @@ from .ml.trainer import Trainer
 from .storage import Store
 from .checkpoints import register_checkpoint
 from .importers.hub import HubImports
+from .notebook_auth import NotebookAuth
 from .api.schemas import HubImportRequest
 
 
@@ -28,7 +29,7 @@ def create_app(root=None):
     trainer = Trainer(datasets, store, root / 'checkpoints')
     imports = HubImports(datasets)
     profile = os.environ.get('NANOFORGE_UI_PROFILE', '')
-    if profile not in ('', 'colab-l4'):
+    if profile not in ('', 'colab-l4', 'kaggle-t4x2'):
         raise ValueError('Unknown UI profile.')
     defaults = None
     if profile:
@@ -64,7 +65,8 @@ def create_app(root=None):
                                    if source['name'] != 'hitl' and (datasets.directory / source['name']).is_file()]
             if not options['datasets']:
                 options['datasets'] = [{'name': 'starter-sample.txt', 'weight': 100}]
-        return {'environment': 'colab' if profile else 'local', 'label': 'Colab L4' if profile else 'Local',
+        return {'environment': 'kaggle' if profile=='kaggle-t4x2' else ('colab' if profile else 'local'),
+                'label': 'Kaggle T4 ×2' if profile=='kaggle-t4x2' else ('Colab L4' if profile else 'Local'),
                 'transport': 'poll' if profile else 'websocket', 'defaults': options}
 
     @app.get('/api/status')
@@ -297,6 +299,10 @@ def create_app(root=None):
     frontend = Path(os.environ.get('NANOFORGE_FRONTEND_DIR', Path(__file__).resolve().parents[1] / 'frontend' / 'dist'))
     if (frontend / 'index.html').is_file():
         app.mount('/', StaticFiles(directory=frontend, html=True), name='studio')
+    password=os.environ.get('NANOFORGE_UI_PASSWORD','')
+    if password:
+        if len(password)<20:raise ValueError('Notebook UI password must be at least 20 characters.')
+        app.add_middleware(NotebookAuth,password=password)
     return app
 
 

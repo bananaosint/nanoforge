@@ -13,7 +13,8 @@ import subprocess
 import sys
 import tarfile
 import time
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
+import base64
 
 
 def node_environment(cache,env):
@@ -70,7 +71,7 @@ class StudioSession:
         self._handle.close()
 
 
-def start_server(repo,home,port=8000,device='cuda',profile='colab-l4',timeout=60):
+def start_server(repo,home,port=8000,device='cuda',profile='colab-l4',timeout=60,password=None):
     """Start only the owned backend process, with built UI and no model/run initialized."""
     repo,home=Path(repo).resolve(),Path(home).resolve()
     if not (repo/'frontend/dist/index.html').is_file():raise ValueError('Build the frontend before starting Studio.')
@@ -82,6 +83,8 @@ def start_server(repo,home,port=8000,device='cuda',profile='colab-l4',timeout=60
     home.mkdir(parents=True,exist_ok=True)
     env={**os.environ,'NANOFORGE_HOME':str(home),'NANOFORGE_DEVICE':device,
          'NANOFORGE_FRONTEND_DIR':str(repo/'frontend/dist'),'NANOFORGE_UI_PROFILE':profile}
+    env.pop('NANOFORGE_UI_PASSWORD',None)
+    if password:env['NANOFORGE_UI_PASSWORD']=password
     log=home/'studio-server.log'
     handle=log.open('ab')
     process=subprocess.Popen([sys.executable,'-m','uvicorn','backend.main:app','--host','127.0.0.1',
@@ -93,7 +96,9 @@ def start_server(repo,home,port=8000,device='cuda',profile='colab-l4',timeout=60
         if process.poll() is not None:
             handle.close();raise RuntimeError('Studio failed to start:\n'+session.logs())
         try:
-            with urlopen(f'http://127.0.0.1:{port}/api/health',timeout=1) as response:
+            request=Request(f'http://127.0.0.1:{port}/api/health')
+            if password:request.add_header('Authorization','Basic '+base64.b64encode(('nanoforge:'+password).encode()).decode())
+            with urlopen(request,timeout=1) as response:
                 health=json.load(response)
             if health.get('pid')==process.pid and health['device']==device:
                 return session

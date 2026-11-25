@@ -15,6 +15,8 @@ from .model import GPT, ModelConfig, resolve_model, parameter_count, MAX_PARAMET
 from .tokenizer import Tokenizer, format_prompt, END
 from .dataset import WeightedMixer, completion_batch, completion_log_probability
 from .corpus import FileCorpus, vocabulary_text, PairPool
+from .parallel import ReplicaLoss, reduced_loss
+from .xla_training import fixed_completion_batch
 from ..storage import now
 
 DEFAULT_PROMPTS = ['First Citizen:', 'To be, or not to be', 'The meaning of life is']
@@ -37,6 +39,8 @@ class Trainer:
         self.amp_enabled = False
         self.precision = 'float32'
         self.allow_tf32 = False
+        self.parallel = None
+        self.training_gpus = 1
         self.scaler = None
         self.overflow_retries = 0
         self.step = 0
@@ -73,6 +77,36 @@ class Trainer:
         self.precision = 'float16' if enabled else 'float32'
         if enabled and scaler_state:
             self.scaler.load_state_dict(scaler_state)
+
+    def _configure_parallel(self,options,reference=None,validate_only=False):
+        requested=options.get('multi_gpu',False)
+        if requested and (not str(self.device).startswith('cuda') or torch.cuda.device_count()<2):
+            raise ValueError('Two-GPU training requires at least two CUDA GPUs. Disable Use both GPUs on this runtime.')
+        self.parallel=None
+        self.training_gpus=2 if requested else 1
+        if requested:
+            if options.get('batch_size',8)<2:
+                raise ValueError('Use a batch size of at least 2 to train on both GPUs.')
+            if validate_only:return
+            replica=ReplicaLoss(self.model,self.precision,reference,options.get('beta',0.1))
+            self.parallel=torch.nn.DataParallel(replica,device_ids=[0,1],output_device=0)
+
+    def _parallel_completion_loss(self,pairs,mode,options):
+        selected=random.choices(pairs,k=options.get('batch_size',8))
+        if mode=='sft':
+            x,y=fixed_completion_batch(self.tokenizer,selected,self.model.config.block_size)
+            return reduced_loss(self.parallel(x.to(self.device),y.to(self.device))),x.numel()
+        self.model.eval()
+        chosen,rejected=[],[]
+        for pair in selected:
+            a,b=pair['response_a'],pair['response_b']
+            win,lose=(a,b) if pair['winner']=='a' else (b,a)
+            chosen.append({'prompt':pair['prompt'],'corrected_output':win})
+            rejected.append({'prompt':pair['prompt'],'corrected_output':lose})
+        win=fixed_completion_batch(self.tokenizer,chosen,self.model.config.block_size)
+        lose=fixed_completion_batch(self.tokenizer,rejected,self.model.config.block_size)
+        tensors=[tensor.to(self.device) for tensor in (*win,*lose)]
+        return reduced_loss(self.parallel(*tensors)),win[0].numel()+lose[0].numel()
 
     def _autocast(self):
         return torch.autocast(device_type='cuda',dtype=torch.float16) if self.amp_enabled else nullcontext()
@@ -113,6 +147,8 @@ class Trainer:
             tokenizer = self._new_tokenizer(config)
             model_config = resolve_model(config.get('preset', 'Nano'), config.get('model', {}), tokenizer.vocab_size)
             self._configure_precision(config)
+            self.parallel = None
+            self.training_gpus = 1
             candidate = GPT(model_config).to(self.device)
             self.model, self.tokenizer = candidate, tokenizer
             self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.get('learning_rate', 0.0003), weight_decay=0.1, fused=str(self.device).startswith('cuda'), foreach=False if str(self.device).split(':')[0] in ('xpu','cuda') else None)
@@ -168,6 +204,7 @@ class Trainer:
             options = {**self.config, **config}
             mode = options.get('mode', 'pretrain')
             self._configure_precision(options)
+            self._configure_parallel(options,validate_only=True)
             mixer = None
             pairs = []
             if mode == 'pretrain':
@@ -186,6 +223,7 @@ class Trainer:
             self._branch_pending = False
             # A DPO reference is fixed for this entire fine-tuning pass.
             reference = copy.deepcopy(self.model).eval().requires_grad_(False) if mode == 'dpo' else None
+            self._configure_parallel(options,reference)
             if mode != 'pretrain':
                 self.val_loss = None
             self.mode = mode
@@ -221,8 +259,11 @@ class Trainer:
                         with self._autocast():
                             if self.mode == 'pretrain' or (self.mode == 'sft' and mixer and random.random() < options.get('base_mix', 0.1)):
                                 x, y = mixer.batch(options.get('batch_size', 8))
-                                loss = self.model(x, y)['loss']
+                                loss = reduced_loss(self.parallel(x,y)) if self.parallel is not None else self.model(x, y)['loss']
                                 tokens += x.numel()
+                            elif self.parallel is not None:
+                                loss,count=self._parallel_completion_loss(pairs,self.mode,options)
+                                tokens+=count
                             elif self.mode == 'sft':
                                 losses = []
                                 for pair in random.choices(pairs, k=options.get('batch_size', 8)):
@@ -366,6 +407,8 @@ class Trainer:
             payload = torch.load(self.checkpoint_path(name), map_location=self.device, weights_only=True)
             model = GPT(ModelConfig(**payload['model_config'])).to(self.device)
             model.load_state_dict(payload['model_state_dict'])
+            self.parallel = None
+            self.training_gpus = 1
             self.model = model.eval()
             self.tokenizer = Tokenizer(state=payload['tokenizer_state'])
             self.optimizer = torch.optim.AdamW(model.parameters(), fused=str(self.device).startswith('cuda'), foreach=False if str(self.device).split(':')[0] in ('xpu','cuda') else None)
@@ -435,7 +478,7 @@ class Trainer:
             return {}
 
     def status(self):
-        return {'imported_pairs': self.imported_pairs(), 'state': self.state, 'device': self.device, 'device_name': device_name(self.device), 'precision':self.precision, 'allow_tf32':self.allow_tf32, 'step': self.step, 'target_step': self.target_step, 'mode': self.mode,
+        return {'imported_pairs': self.imported_pairs(), 'state': self.state, 'device': self.device, 'device_name': device_name(self.device), 'precision':self.precision, 'allow_tf32':self.allow_tf32, 'cuda_device_count':torch.cuda.device_count() if str(self.device).startswith('cuda') else 0, 'training_gpus':self.training_gpus, 'step': self.step, 'target_step': self.target_step, 'mode': self.mode,
                 'run_id': self.run_id, 'checkpoint': self.checkpoint, 'error': self.error, 'val_loss': self.val_loss,
                 'parameters': sum(p.numel() for p in self.model.parameters()) if self.model else 0,
                 'model_config': asdict(self.model.config) if self.model else None, 'config': self.config,
