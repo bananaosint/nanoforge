@@ -5,7 +5,7 @@ from pathlib import Path
 import gradio as gr
 import torch
 from backend import zerogpu as engine
-from backend.importers.hub import HubImports
+from backend.importers.hub import HubImports, CATALOG
 from backend.ml.dataset import DatasetManager
 
 # Avoid inherited CPU OpenMP worker pools when ZeroGPU forks a GPU request.
@@ -25,13 +25,14 @@ def prepare(dataset,checkpoint,mode,architecture,layers,heads,width,context,expe
     except Exception as exc:raise gr.Error(str(exc)) from exc
 
 
-def sample_dolly():
-    folder=ROOT/'example-dolly'
+def sample_dataset(source):
+    if source not in {item['id'] for item in CATALOG}:raise gr.Error('Choose a dataset from the catalog.')
+    folder=ROOT/'samples'/source
     manager=HubImports(DatasetManager(folder))
     try:
-        manager.start('dolly',1000);manager.thread.join(180)
+        manager.start(source,1000);manager.thread.join(180)
         if manager.thread.is_alive():manager.pause();raise ValueError('Import is still preparing. Retry after it pauses.')
-        job=manager.status()['jobs']['dolly']
+        job=manager.status()['jobs'][source]
         if job['state'] not in ('sampled','completed'):raise ValueError(job.get('error') or 'Dataset import failed.')
         return str(folder/job['output'])
     finally:manager.shutdown()
@@ -58,7 +59,8 @@ Create/import on CPU, then request short GPU training or generation calls. Each 
     with gr.Row():
         dataset=gr.File(label='UTF-8 dataset · .txt/.jsonl · max 20 MiB',file_types=['.txt','.jsonl'],type='filepath')
         checkpoint=gr.File(label='Optional NanoForge checkpoint · max 128 MiB',file_types=['.pt'],type='filepath')
-    sample=gr.Button('Import Dolly sample (1,000 source rows, CPU)')
+    sample_source=gr.Dropdown([(item['label']+' · '+item['repo'],item['id']) for item in CATALOG],value='dolly',label='Direct dataset download (CPU sample)')
+    sample=gr.Button('Import dataset sample (1,000 source rows, CPU)')
     gr.Markdown('Settings below apply when you **create/import a session**. Import your latest checkpoint to resume with a different objective, batch or learning rate. The chunk-length control applies to each training click.')
     with gr.Row():
         mode=gr.Dropdown(['pretrain','sft','dpo'],value='pretrain',label='Training objective')
@@ -86,7 +88,7 @@ Create/import on CPU, then request short GPU training or generation calls. Each 
     tokens=gr.Slider(1,64,value=32,step=1,label='New tokens')
     generate_button=gr.Button('Generate with current checkpoint')
     text=gr.Textbox(label='Completion',interactive=False)
-    sample.click(sample_dolly,outputs=dataset,concurrency_id='nanoforge-cpu')
+    sample.click(sample_dataset,inputs=sample_source,outputs=dataset,concurrency_id='nanoforge-cpu')
     create.click(prepare,inputs=[dataset,checkpoint,mode,architecture,layers,heads,width,context,experts,top_k,batch,learning_rate,precision,tokenizer],
                  outputs=[session,status,output_file],concurrency_id='nanoforge-cpu')
     train_button.click(train,inputs=[session,steps],outputs=[metrics,output_file],concurrency_id='nanoforge-gpu',concurrency_limit=1)

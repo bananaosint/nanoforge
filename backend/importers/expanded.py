@@ -13,8 +13,16 @@ EXTRA_CATALOG = [
     {'id':'philosopher-quotes','repo':'datastax/philosopher-quotes','label':'Philosopher Quotes','kind':'text','size':'~41 KB compressed','license':'CC · see source card'},
     {'id':'science-facts','repo':'Royal-lobster/10001-Science-Facts','label':'10,001 Science Facts','kind':'text','size':'~821 KB compressed','license':'MIT','note':'Source URLs and category metadata are preserved; source claims are not independently fact-checked.'},
     {'id':'chess-puzzles','repo':'Lichess/chess-puzzles','label':'Lichess Chess Puzzles','kind':'sft','size':'~885 MB compressed','license':'CC0 1.0','note':'Applies the opponent setup move before presenting the FEN; target is the remaining legal UCI solution.'},
+    {'id':'smoltalk','repo':'HuggingFaceTB/smoltalk','config':'all','label':'SmolTalk','kind':'sft','size':'2.01 GB compressed','license':'Mixed · see subset terms','note':'Uses all/train once, not its duplicated component configurations. Preserves each assistant turn and its preceding conversation.'},
+    {'id':'tulu-3-sft-mixture','repo':'allenai/tulu-3-sft-mixture','label':'Tulu 3 SFT Mixture','kind':'sft','size':'1.41 GB compressed','license':'ODC-BY · subset terms apply','note':'Includes multilingual data and persona subsets also listed separately. Avoid double-weighting overlapping sources. Some subsets are noncommercial.'},
+    {'id':'tulu-3-sft-personas-math-grade','repo':'allenai/tulu-3-sft-personas-math-grade','label':'Tulu 3 Personas · Grade Math','kind':'sft','size':'52 MB compressed','license':'See source card','note':'Exact requested unfiltered repository. Overlaps the Tulu mixture; select weights deliberately.'},
+    {'id':'tulu-3-sft-personas-instruction-following','repo':'allenai/tulu-3-sft-personas-instruction-following','label':'Tulu 3 Personas · Instruction Following','kind':'sft','size':'39 MB compressed','license':'ODC-BY','note':'Instruction constraints are retained as metadata. Overlaps the Tulu mixture.'},
+    {'id':'tulu-3-sft-personas-algebra','repo':'allenai/tulu-3-sft-personas-algebra','label':'Tulu 3 Personas · Algebra','kind':'sft','size':'36 MB compressed','license':'See source card','note':'Uses the exact requested sft-personas-algebra repository; no similarly named dataset is substituted.'},
+    {'id':'codealpaca-20k','repo':'HuggingFaceH4/CodeAlpaca_20K','label':'CodeAlpaca 20K','kind':'sft','size':'3 MB compressed','license':'CC · see source card','note':'Imports the H4 training split only. Preserves code whitespace; never executes downloaded code.'},
 ]
 EXTRA_IDS = {item['id'] for item in EXTRA_CATALOG}
+CHAT_IDS = {'smoltalk','tulu-3-sft-mixture','tulu-3-sft-personas-math-grade',
+            'tulu-3-sft-personas-instruction-following','tulu-3-sft-personas-algebra'}
 
 
 def pair(prompt, completion, **metadata):
@@ -40,7 +48,37 @@ def dialogue_pairs(turns, persona=None):
     return records
 
 
+def conversation_pairs(messages,**metadata):
+    """Train each observed assistant turn using only its preceding role-tagged text."""
+    roles={'system':'System','developer':'Developer','user':'User','assistant':'Assistant','tool':'Tool','function':'Function'}
+    if not isinstance(messages,list) or not messages:
+        raise ValueError('Expected a nonempty messages list.')
+    # Validate the whole row before emitting any examples into the import stream.
+    for message in messages:
+        if (not isinstance(message,dict) or not isinstance(message.get('role'),str)
+            or message['role'] not in roles or not isinstance(message.get('content'),str)
+            or not message['content'].strip()):
+            raise ValueError('Messages need a recognized role and nonempty text content.')
+    history=[];records=[];has_user=False
+    for index,message in enumerate(messages):
+        role,content=message['role'],message['content']
+        if role=='user':has_user=True
+        if role=='assistant':
+            if not has_user:raise ValueError('Assistant response has no preceding user instruction.')
+            records.append(pair('\n\n'.join(history),content,source_turn=index,**metadata))
+        history.append(roles[role]+': '+content)
+    if not records:raise ValueError('Conversation has no assistant response.')
+    return records
+
+
 def normalize_extra(key,row):
+    if key in CHAT_IDS:
+        metadata={}
+        for source,target in (('id','example_id'),('source','source_subset'),('constraints','constraints'),('prompt','original_prompt')):
+            if source in row:metadata[target]=row[source]
+        return conversation_pairs(row['messages'],**metadata)
+    if key=='codealpaca-20k':
+        return pair(row['prompt'],row['completion'])
     if key=='cosmopedia-v2':
         if not isinstance(row.get('text'),str) or not row['text'].strip():
             raise ValueError('Cosmopedia row has no text.')

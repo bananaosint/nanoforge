@@ -117,6 +117,10 @@ with patch('torch.cuda.is_available',side_effect=AssertionError('Probed CUDA at 
     import app
 assert len(app.demo.config['dependencies'])==4
 assert app.SIZE=='large'
+choices={value for label,value in app.sample_source.choices}
+assert {'smoltalk','tulu-3-sft-mixture','tulu-3-sft-personas-math-grade',
+        'tulu-3-sft-personas-instruction-following','tulu-3-sft-personas-algebra',
+        'codealpaca-20k'}<=choices
 print('Gradio UI built without CUDA initialization')
 """
     result=subprocess.run([sys.executable,'-c',code],cwd=bundle,text=True,capture_output=True,timeout=60,

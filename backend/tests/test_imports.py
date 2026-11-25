@@ -95,7 +95,7 @@ def test_partial_import_is_hidden_and_resume_drops_uncommitted_bytes(tmp_path,mo
 def test_import_api_catalog_and_validation(tmp_path):
     app=create_app(tmp_path)
     with TestClient(app) as client:
-        assert len(client.get('/api/imports').json()['catalog'])==16
+        assert len(client.get('/api/imports').json()['catalog'])==22
         assert client.post('/api/imports/start',json={'dataset_id':'arbitrary/repo'}).status_code==400
         assert client.post('/api/imports/start',json={'dataset_id':'goat','max_records':-1}).status_code==422
         assert client.post('/api/imports/pause').status_code==200

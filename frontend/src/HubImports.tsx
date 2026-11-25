@@ -37,7 +37,7 @@ export default function HubImports({onComplete}:{onComplete:(names:string[])=>vo
  }
  async function pause(){setPending(true);try{setData(await api<State>('/imports/pause','POST'))}catch(e){setError(String(e))}finally{setPending(false)}}
  return <section className="panel hub-panel">
-  <div className="panel-title"><div><Globe2 size={18}/><h2>Direct dataset imports</h2><span className="muted">{data?.catalog.length??16} sources · no upload limit</span></div>
+  <div className="panel-title"><div><Globe2 size={18}/><h2>Direct dataset imports</h2><span className="muted">{data?.catalog.length??'…'} sources · no upload limit</span></div>
    <div className="row hub-actions"><select aria-label="Import record limit" value={limit} disabled={data?.active||pending} onChange={e=>setLimit(+e.target.value)}><option value={0}>Full training split</option><option value={1000}>1,000 source-row sample</option><option value={10000}>10,000 source-row sample</option></select>
    {data?.active?<button className="button secondary small" disabled={pending} onClick={pause}><Pause size={14}/>Pause imports</button>:<button className="button primary small" disabled={!data||pending||!selected.length} onClick={()=>start(selected,limit)}><Download size={14}/>Import selected ({selected.length})</button>}</div>
   </div>
