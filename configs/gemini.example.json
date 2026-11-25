@@ -1,0 +1,7 @@
+{
+  "mode": "mock",
+  "model": "gemini-3.8-flash",
+  "cli_command": ["gemini"],
+  "timeout_seconds": 30,
+  "setup_complete": true
+}

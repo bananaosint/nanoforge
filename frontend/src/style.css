@@ -81,3 +81,5 @@
 .tf32-control{display:flex;align-items:flex-start;gap:8px;font-size:.75rem;color:var(--muted);line-height:1.5}.tf32-control input{width:auto;margin-top:3px;accent-color:var(--green)}
 
 fieldset.config-content{border:0;margin:0;min-width:0}
+
+.gemini-panel{margin-bottom:22px}.gemini-form{padding:20px;display:flex;flex-direction:column;gap:15px;line-height:1.6}.gemini-form small{color:var(--muted);font-size:.75rem}.gemini-dialog{max-height:90vh;overflow:auto}.gemini-dialog .gemini-form{padding:24px}.gemini-telemetry{flex-wrap:wrap;gap:20px;font-size:.8rem}.gemini-form details{font-size:.8rem}.teacher-prompt{white-space:pre-wrap;max-height:160px;overflow:auto;font-size:.8rem}.gemini-form textarea{min-height:150px}.gemini-panel input[type=checkbox]{width:auto}

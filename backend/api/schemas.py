@@ -31,6 +31,11 @@ class Dimensions(StrictModel):
 
 
 class Training(StrictModel):
+    watchdog_enabled:bool=False
+    watchdog_interval_steps:int=Field(default=500,ge=1,le=1000000)
+    watchdog_min_confidence:float=Field(default=0.8,ge=0,le=1,allow_inf_nan=False)
+    watchdog_lr_factor:float=Field(default=0.5,gt=0,lt=1,allow_inf_nan=False)
+    watchdog_balance_multiplier:float=Field(default=2.0,gt=1,le=10,allow_inf_nan=False)
     mode: Literal['pretrain', 'sft', 'dpo'] = 'pretrain'
     precision: Literal['auto','float32','float16','bfloat16'] = 'auto'
     allow_tf32: bool = False
@@ -73,6 +78,7 @@ class Arena(Generation):
 
 
 class Feedback(StrictModel):
+    teacher_provenance:dict|None=None
     kind: Literal['sft', 'preference']
     prompt: str = Field(min_length=1, max_length=20000)
     original_output: str = Field(default='', max_length=50000)
@@ -96,6 +102,16 @@ class Feedback(StrictModel):
 
 class CheckpointSelection(StrictModel):
     name: str
+
+
+class TeachingRequest(StrictModel):
+    prompt:str=Field(min_length=1,max_length=20000)
+    student_output:str=Field(default='',max_length=50000)
+    checkpoint:str|None=Field(default=None,max_length=200)
+
+
+class TeachingApproval(StrictModel):
+    corrected_output:str=Field(min_length=1,max_length=50000)
 
 
 class Prompts(StrictModel):

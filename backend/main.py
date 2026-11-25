@@ -19,6 +19,9 @@ from .checkpoints import register_checkpoint
 from .importers.hub import HubImports
 from .notebook_auth import NotebookAuth
 from .api.schemas import HubImportRequest
+from .api.schemas import TeachingRequest, TeachingApproval
+from .gemini_client import GeminiService, GeminiSettings
+from .teaching import TeachingJobs
 
 
 def create_app(root=None):
@@ -26,7 +29,9 @@ def create_app(root=None):
     root.mkdir(parents=True, exist_ok=True)
     store = Store(root / 'nanoforge.sqlite3')
     datasets = DatasetManager(root / 'data')
-    trainer = Trainer(datasets, store, root / 'checkpoints')
+    gemini=GeminiService(store)
+    trainer = Trainer(datasets, store, root / 'checkpoints',gemini=gemini)
+    teaching=TeachingJobs(store,gemini)
     imports = HubImports(datasets)
     profile = os.environ.get('NANOFORGE_UI_PROFILE', '')
     if profile not in ('', 'colab-l4', 'colab-a100', 'colab-g4', 'kaggle-t4x2'):
@@ -41,11 +46,13 @@ def create_app(root=None):
         yield
         await asyncio.to_thread(imports.shutdown)
         await asyncio.to_thread(trainer.shutdown)
+        teaching.shutdown()
         store.close()
 
     app = FastAPI(title='NanoForge', version='1.0.0', lifespan=lifespan)
     app.state.trainer, app.state.store = trainer, store
     app.state.imports = imports
+    app.state.gemini,app.state.teaching=gemini,teaching
     app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173', 'http://127.0.0.1:5173'],
                        allow_methods=['*'], allow_headers=['*'])
 
@@ -72,6 +79,31 @@ def create_app(root=None):
     @app.get('/api/status')
     def status():
         return trainer.status()
+
+    @app.get('/api/gemini/settings')
+    def gemini_settings():return gemini.status()
+
+    @app.put('/api/gemini/settings')
+    def configure_gemini(body:GeminiSettings):return gemini.configure(body)
+
+    @app.post('/api/gemini/test')
+    def test_gemini():
+        client,_=gemini.client()
+        return client.request('watchdog',{'step':0,'train_loss_window':[],'validation_loss_history':[]})
+
+    @app.get('/api/teaching')
+    def teaching_list():return teaching.list()
+
+    @app.post('/api/teaching')
+    def teaching_start(body:TeachingRequest):
+        if not body.prompt.strip():raise ValueError('Enter a nonempty prompt.')
+        return teaching.start(body.model_dump())
+
+    @app.get('/api/teaching/{job_id}')
+    def teaching_status(job_id:str):return teaching.get(job_id)
+
+    @app.post('/api/teaching/{job_id}/approve')
+    def approve_teaching(job_id:str,body:TeachingApproval):return teaching.approve(job_id,body.corrected_output)
 
     @app.get('/api/presets')
     def presets():

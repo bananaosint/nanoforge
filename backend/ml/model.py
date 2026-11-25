@@ -212,7 +212,11 @@ class GPT(nn.Module):
         auxiliary=torch.stack(auxiliaries).mean()
         lm_loss=loss
         if loss is not None and self.training:loss=loss+auxiliary
-        return {'logits': logits, 'loss': loss, 'lm_loss':lm_loss, 'aux_loss':auxiliary, 'attentions': attentions}
+        stats=[block.mlp.last_stats for block in self.blocks] if self.config.architecture=='moe' else []
+        return {'logits': logits, 'loss': loss, 'lm_loss':lm_loss, 'aux_loss':auxiliary, 'attentions': attentions,
+                'balance_loss':torch.stack([s[0] for s in stats]).mean() if stats else auxiliary.detach()*0,
+                'z_loss':torch.stack([s[1] for s in stats]).mean() if stats else auxiliary.detach()*0,
+                'expert_load_pct':torch.stack([s[2] for s in stats]) if stats else None}
 
     @torch.no_grad()
     def generate(self, ids, max_new_tokens=64, temperature=0.8, top_k=40, telemetry=False, seed=42):

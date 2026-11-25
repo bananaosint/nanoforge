@@ -30,6 +30,7 @@ class SparseMoE(nn.Module):
             balance=len(self.experts)*(frequency*probabilities.mean(0)).sum()
             z=logits.logsumexp(-1).square().mean()
             auxiliary=self.aux_coef*balance+self.z_coef*z
+            self.last_stats=(balance.detach(),z.detach(),frequency.detach()*self.top_k*100)
         output=torch.zeros_like(flat)
         for number,expert in enumerate(self.experts):
             tokens,slots=torch.where(indices==number)

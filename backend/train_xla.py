@@ -23,6 +23,7 @@ from .storage import Store
 def prepare(config,home,resume=None,seed=42,expected_replicas=0,log_every=10,keep_last=1):
     """Build caches once before spawning, avoiding concurrent .partial writes."""
     config=NewRun.model_validate(config).model_dump(exclude_none=True)
+    if config['watchdog_enabled']:raise ValueError('Gemini watchdog is supported by the persistent Studio/CLI trainer, not TPU/XLA workers.')
     if config['precision']=='float16':
         raise ValueError('TPUs use bfloat16, not CUDA float16. Set precision to bfloat16 or float32.')
     if config['precision']=='auto':config['precision']='bfloat16'

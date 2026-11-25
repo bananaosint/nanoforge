@@ -18,12 +18,14 @@ from .corpus import FileCorpus, vocabulary_text, PairPool
 from .parallel import ReplicaLoss, reduced_loss
 from .xla_training import fixed_completion_batch
 from ..storage import now
+from ..gemini_client import GeminiService
+from ..watchdog import CheckpointWatchdog
 
 DEFAULT_PROMPTS = ['First Citizen:', 'To be, or not to be', 'The meaning of life is']
 
 
 class Trainer:
-    def __init__(self, datasets, store, checkpoint_dir, device=None):
+    def __init__(self, datasets, store, checkpoint_dir, device=None, gemini=None):
         self.datasets, self.store = datasets, store
         self.directory = Path(checkpoint_dir)
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -56,6 +58,8 @@ class Trainer:
         self.error = None
         self.val_loss = None
         self.prompts = store.setting('prompts', DEFAULT_PROMPTS)
+        self.gemini=gemini or GeminiService(store)
+        self.watchdog=CheckpointWatchdog(self,self.gemini)
 
     def _configure_precision(self, config, scaler_state=None):
         requested = config.get('precision','auto')
@@ -89,7 +93,8 @@ class Trainer:
             if options.get('batch_size',8)<2:
                 raise ValueError('Use a batch size of at least 2 to train on both GPUs.')
             if validate_only:return
-            replica=ReplicaLoss(self.model,self.precision,reference,options.get('beta',0.1))
+            replica=ReplicaLoss(self.model,self.precision,reference,options.get('beta',0.1),
+                                telemetry=self.model.config.architecture=='moe' and options.get('mode','pretrain')=='pretrain')
             self.parallel=torch.nn.DataParallel(replica,device_ids=[0,1],output_device=0)
 
     def _parallel_completion_loss(self,pairs,mode,options):
@@ -158,6 +163,7 @@ class Trainer:
             self.target_step = None
             self._branch_pending = False
             self.mode, self.state, self.error = 'pretrain', 'ready', None
+            self.watchdog.reset()
             self._new_run(config)
             return self.status()
 
@@ -235,6 +241,7 @@ class Trainer:
             self.stop_event.clear()
             self.pause_event.clear()
             self.error, self.state = None, 'running'
+            self.watchdog.reset(self.watchdog.state())
             if background:
                 self.thread = threading.Thread(target=self._train, args=(options, mixer, pairs, reference, evaluate, time_budget_seconds), daemon=False, name='nanoforge-trainer')
                 self.thread.start()
@@ -250,6 +257,7 @@ class Trainer:
             if evaluate and self.mode == 'pretrain':
                 with self.lock:
                     self._evaluate(mixer)
+                    if self.watchdog.enabled():self._save()
             target = self.target_step
             interval = options.get('eval_interval', 50)
             accumulation = options.get('gradient_accumulation', 1)
@@ -264,11 +272,24 @@ class Trainer:
                     self.model.train()
                     self.optimizer.zero_grad(set_to_none=True)
                     total, tokens = 0.0, 0
+                    balances=[];zs=[];loads=[];routing_weights=[]
                     for _ in range(accumulation):
                         with self._autocast():
                             if self.mode == 'pretrain' or (self.mode == 'sft' and mixer and random.random() < options.get('base_mix', 0.1)):
                                 x, y = mixer.batch(options.get('batch_size', 8))
-                                loss = reduced_loss(self.parallel(x,y)) if self.parallel is not None else self.model(x, y)['loss']
+                                if self.parallel is not None:
+                                    output=self.parallel(x,y);loss=reduced_loss(output)
+                                    if len(output)>2:
+                                        weight=output[5].sum()
+                                        balances.append(output[2].sum()/weight);zs.append(output[3].sum()/weight)
+                                        loads.append(output[4].sum(0)/weight)
+                                        routing_weights.append(x.numel())
+                                else:
+                                    output=self.model(x,y);loss=output['loss']
+                                    balances.append(output['balance_loss']);zs.append(output['z_loss'])
+                                    if output['expert_load_pct'] is not None:
+                                        loads.append(output['expert_load_pct']);routing_weights.append(x.numel())
+                                del output
                                 tokens += x.numel()
                             elif self.parallel is not None:
                                 loss,count=self._parallel_completion_loss(pairs,self.mode,options)
@@ -302,7 +323,7 @@ class Trainer:
                         self.scaler.scale(loss / accumulation).backward()
                         total += loss_value / accumulation
                     self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(),1.0,error_if_nonfinite=not self.amp_enabled)
+                    grad_norm=torch.nn.utils.clip_grad_norm_(self.model.parameters(),1.0,error_if_nonfinite=not self.amp_enabled)
                     scale_before = self.scaler.get_scale()
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
@@ -318,6 +339,13 @@ class Trainer:
                     elapsed = max(time.perf_counter() - began, 1e-9)
                     metric = {'step': self.step, 'train_loss': total, 'val_loss': None, 'steps_per_sec': 1 / elapsed,
                               'tokens_per_sec': tokens / elapsed, 'mode': self.mode}
+                    norm=float(grad_norm.detach().float())
+                    metric.update(grad_norm=norm if math.isfinite(norm) else None,
+                                  learning_rate=self.optimizer.param_groups[0]['lr'],
+                                  balance_loss=float(torch.stack(balances).mean()) if balances else 0.0,
+                                  z_loss=float(torch.stack(zs).mean()) if zs else 0.0,
+                                  expert_load_pct=(sum(load*weight for load,weight in zip(loads,routing_weights))/sum(routing_weights)).cpu().tolist() if loads else [],
+                                  routing_tokens=sum(routing_weights))
                     if evaluate and self.mode == 'pretrain' and (self.step % interval == 0 or self.step == target):
                         self._evaluate(mixer)
                         metric['val_loss'] = self.val_loss
@@ -326,6 +354,7 @@ class Trainer:
                     self.store.execute('INSERT INTO metrics(run_id,payload) VALUES(?,?)', (self.run_id, json.dumps(metric)))
                     if self.step % interval == 0:
                         self._save()
+                    self.watchdog.boundary()
             with self.lock:
                 self._save()
                 self.state = 'stopped' if self.stop_event.is_set() else 'completed'
@@ -344,6 +373,7 @@ class Trainer:
             self.val_loss = sum(losses) / len(losses)
             if not math.isfinite(self.val_loss):
                 raise ValueError('Non-finite validation loss.')
+            self.watchdog.evaluated()
             for prompt in self.prompts:
                 result = self._generate(prompt, max_new_tokens=40, telemetry=False, seed=7)
                 self.store.execute('INSERT INTO timeline(run_id,step,prompt,output) VALUES(?,?,?,?)', (self.run_id, self.step, prompt, result['text']))
@@ -384,6 +414,7 @@ class Trainer:
                    'training_config': self.config, 'mode': self.mode, 'run_id': self.run_id,
                    'precision':self.precision,'scaler_state_dict':self.scaler.state_dict() if self.scaler else {},
                    'torch_version':str(torch.__version__),'checkpoint_format_version':1}
+        payload['watchdog_state']=self.watchdog.checkpoint_state()
         temporary = path.with_suffix('.tmp')
         torch.save(payload, temporary)
         temporary.replace(path)
@@ -394,6 +425,8 @@ class Trainer:
         temp_sidecar.write_text(json.dumps(metadata))
         temp_sidecar.replace(sidecar)
         self.checkpoint = name
+        try:self.watchdog.checkpoint(path)
+        except Exception:self.watchdog.event(action='ERROR',reason='Watchdog recovery checkpoint unavailable; training continues.')
         return metadata
 
     def save(self):
@@ -438,7 +471,41 @@ class Trainer:
             self.checkpoint, self.state, self.error = name, 'ready', None
             self.target_step = None
             self._branch_pending = True
+            self.watchdog.reset(payload.get('watchdog_state'))
             return self.status()
+
+    def _watchdog_rollback(self,name):
+        """Prepare weights/optimizer/scaler completely before swapping live state."""
+        payload=torch.load(self.directory/name,map_location=self.device,weights_only=True)
+        config=ModelConfig(**payload['model_config'])
+        current=self.model.config
+        keys=('vocab_size','n_layer','n_head','n_embd','block_size','architecture')
+        if config.architecture=='moe':keys+=('n_experts','experts_per_token')
+        if any(getattr(config,key)!=getattr(current,key) for key in keys):
+            raise ValueError('Recovery checkpoint architecture changed.')
+        config.router_aux_loss=current.router_aux_loss;config.router_z_loss=current.router_z_loss
+        candidate=GPT(config).to(self.device);candidate.load_state_dict(payload['model_state_dict'])
+        optimizer=torch.optim.AdamW(candidate.parameters(),fused=str(self.device).startswith('cuda'))
+        optimizer.load_state_dict(payload['optimizer_state_dict'])
+        learning_rate=max(1e-8,self.optimizer.param_groups[0]['lr']*self.config.get('watchdog_lr_factor',0.5))
+        for group in optimizer.param_groups:
+            group['lr']=learning_rate;group['fused']=str(self.device).startswith('cuda')
+            if str(self.device).split(':')[0] in ('cuda','xpu'):group['foreach']=False
+        scaler=torch.amp.GradScaler('cuda',enabled=self.amp_enabled,init_scale=1024.0)
+        if self.amp_enabled and payload.get('scaler_state_dict'):scaler.load_state_dict(payload['scaler_state_dict'])
+        parallel=None;training_gpus=1
+        if self.config.get('multi_gpu',False):
+            if not str(self.device).startswith('cuda') or torch.cuda.device_count()<2:raise ValueError('Recovery requires two available CUDA GPUs.')
+            replica=ReplicaLoss(candidate,self.precision,telemetry=config.architecture=='moe')
+            parallel=torch.nn.DataParallel(replica,device_ids=[0,1],output_device=0);training_gpus=2
+        source=payload.get('version_tag','')+'.pt'
+        source=source if Path(source).name==source and (self.directory/source).is_file() else None
+        self.model,self.optimizer,self.scaler=candidate,optimizer,scaler
+        self.parallel,self.training_gpus=parallel,training_gpus
+        self.step,self.val_loss=payload['step'],payload['val_loss']
+        if source:self.checkpoint=source
+        self.config['learning_rate']=learning_rate
+        self.metrics=[]
 
     def _generate(self, prompt, max_new_tokens=64, temperature=0.8, top_k=40, telemetry=True, seed=42, model=None, tokenizer=None, mode=None):
         model, tokenizer = model or self.model, tokenizer or self.tokenizer
@@ -496,4 +563,4 @@ class Trainer:
                 'run_id': self.run_id, 'checkpoint': self.checkpoint, 'error': self.error, 'val_loss': self.val_loss,
                 'parameters': sum(p.numel() for p in self.model.parameters()) if self.model else 0,
                 'model_config': asdict(self.model.config) if self.model else None, 'config': self.config,
-                'metrics': self.metrics[-3000:], 'prompts': self.prompts}
+                'metrics': self.metrics[-3000:], 'prompts': self.prompts,'watchdog':self.watchdog.status()}

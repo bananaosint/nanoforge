@@ -6,10 +6,11 @@ from torch.nn import functional as F
 
 
 class ReplicaLoss(nn.Module):
-    def __init__(self,model,precision='float32',reference=None,beta=0.1):
+    def __init__(self,model,precision='float32',reference=None,beta=0.1,telemetry=False):
         super().__init__()
         self.model,self.reference=model,reference
         self.precision,self.beta=precision,beta
+        self.telemetry=telemetry
 
     @staticmethod
     def log_probability(model,x,y):
@@ -25,7 +26,12 @@ class ReplicaLoss(nn.Module):
                 logits=output['logits'].float()
                 losses=F.cross_entropy(logits.flatten(0,1),y.flatten(),ignore_index=-100,reduction='none')
                 count=(y!=-100).sum()
-                return (losses.sum()+output['aux_loss']*count).reshape(1),count.reshape(1)
+                result=((losses.sum()+output['aux_loss']*count).reshape(1),count.reshape(1))
+                if self.telemetry:
+                    weight=x.numel()
+                    return (*result,(output['balance_loss']*weight).reshape(1),(output['z_loss']*weight).reshape(1),
+                            (output['expert_load_pct']*weight).unsqueeze(0),torch.tensor([weight],device=x.device))
+                return result
             win,win_aux=self.log_probability(self.model,x,y)
             lose,lose_aux=self.log_probability(self.model,rejected_x,rejected_y)
             policy=win-lose
@@ -36,5 +42,5 @@ class ReplicaLoss(nn.Module):
 
 
 def reduced_loss(result):
-    total,count=result
+    total,count=result[:2]
     return total.sum()/count.sum().clamp_min(1)

@@ -1,6 +1,6 @@
 # NanoForge
 
-A local studio for building a small GPT from scratch, watching it learn, and improving it with human feedback. Python/PyTorch handles the model; React handles the studio. No pretrained weights, Hugging Face Trainer, hosted inference, account, or API key.
+A local studio for building a small GPT from scratch, watching it learn, and improving it with human feedback. Python/PyTorch handles the model; React handles the studio. Core training requires no pretrained weights, Hugging Face Trainer, hosted inference, account, or API key. Optional Gemini assistance adds checkpoint reviews and human-approved teacher targets.
 
 ## Start
 
@@ -158,6 +158,8 @@ Choose a T4 GPU runtime and run the notebook. `configs/colab-t4.json` uses Mini,
 Download the notebook’s checkpoint ZIP and use **Train & Monitor → Import .pt checkpoint**, or copy its `.pt` and `.json` into your local `checkpoints/` folder. The studio restores the embedded tokenizer/model/optimizer state on its own device. See `docs/colab-t4.md` for setup, resume, precision behavior and verification limits; see `docs/tokenizers.md` for the exact Magic tokenizer semantics.
 
 ## First experiment
+
+Studio first offers **Gemini settings**: enter a session API key, choose a local CLI command, or use deterministic mock mode without credentials. The optional pretraining **Checkpoint watchdog** runs provider calls in the background at a configurable interval (default 500 steps), using numeric losses/gradients/routing with bounded local intervention rules. **HITL Testing Studio → Edit & Teach** can request a Gemini correction for human approval into the existing SFT library. API mode sends enabled watchdog telemetry or explicitly requested teaching examples to Google; core training/manual feedback remain local. Keys stay in backend memory or `GEMINI_API_KEY`, outside SQLite/checkpoints/browser storage. See [Gemini setup, policies and verification](docs/gemini.md).
 
 1. **Train & Monitor:** choose Nano and character-level tokenization. The offline starter corpus is selected initially. Set 250 steps, batch size 8, and evaluation interval 50. Start training initializes random weights if necessary. “New experiment” explicitly replaces the current model with fresh weights and a new run ID.
 2. **Data & Mixer:** download TinyShakespeare or upload your own UTF-8 `.txt`/`.jsonl`. Assign percentages with the sliders. Downloading adds a source at 0%; move its slider to include it. The trainer snapshots the source mix at the start of a run, so changes apply to the next run. Failed downloads use a clearly reported, small offline fallback.

@@ -51,6 +51,7 @@ def prepare_session(root,options,dataset=None,checkpoint=None):
     """CPU-only callback. GPU worker mutations persist only through saved files."""
     config=NewRun.model_validate(options).model_dump(exclude_none=True)
     if config['multi_gpu']:raise ValueError('ZeroGPU profile uses a single allocated device.')
+    if config['watchdog_enabled']:raise ValueError('The asynchronous watchdog needs the persistent Studio/CLI trainer, not ZeroGPU leases.')
     if config['batch_size']>8 or config['gradient_accumulation']>4:raise ValueError('ZeroGPU limits: batch 8, accumulation 4.')
     root=Path(root);root.mkdir(parents=True,exist_ok=True)
     session=uuid.uuid4().hex;path=root/session;path.mkdir()
