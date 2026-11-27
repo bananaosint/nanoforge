@@ -103,10 +103,14 @@ class WeightedMixer:
         return x.to(self.device,non_blocking=True),y.to(self.device,non_blocking=True)
 
 
-def completion_batch(tokenizer, prompt, completion, block_size, device):
+def completion_batch(tokenizer, prompt, completion, block_size, device, *, max_target_tokens=None):
     """Preserve completion tokens when truncating; -100 masks all prompt targets."""
     prefix = tokenizer.encode(format_prompt(prompt))
     target = tokenizer.encode(completion + END)
+    if max_target_tokens is not None and len(target) > min(max_target_tokens, block_size):
+        end = tokenizer.encode(END)
+        budget = min(max_target_tokens, block_size)
+        target = target[:max(0, budget - len(end))] + end
     target = target[:block_size]
     prefix = prefix[-max(1, block_size + 1 - len(target)):]
     ids = (prefix + target)[-(block_size + 1):]

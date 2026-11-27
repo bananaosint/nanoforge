@@ -16,7 +16,7 @@ def format_prompt(prompt: str) -> str:
 
 
 class Tokenizer:
-    def __init__(self, kind='char', text='', state=None):
+    def __init__(self, kind='char', text='', state=None, structural_tokens=()):
         self.kind = state['kind'] if state else kind
         if self.kind not in ('char', 'bpe', 'magic8k'):
             raise ValueError('Unknown tokenizer. Choose char, bpe, or magic8k.')
@@ -24,6 +24,9 @@ class Tokenizer:
             from tokenizers import Tokenizer as FastTokenizer
             self.tokenizer_json = state['tokenizer_json'] if state else (Path(__file__).resolve().parents[1] / 'assets/magic8k/tokenizer.json').read_text(encoding='utf-8')
             self.encoding = FastTokenizer.from_str(self.tokenizer_json)
+            if structural_tokens and not state:
+                self.encoding.add_special_tokens(list(structural_tokens))
+                self.tokenizer_json = self.encoding.to_str()
             self.vocab_size = self.encoding.get_vocab_size(with_added_tokens=True)
         elif self.kind == 'bpe':
             self.encoding = tiktoken.get_encoding('gpt2')

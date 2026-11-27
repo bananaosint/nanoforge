@@ -170,6 +170,20 @@ Studio first offers **Gemini settings**: enter a session API key, choose a local
 
 Short runs prove the pipeline; they do not produce fluent language. The deliberately repetitive offline starter is for sanity checks. Download TinyShakespeare and train for thousands of steps for a meaningful learning curve. This is a small autoregressive language model, not a pretrained assistant.
 
+## Chess Mode
+
+Select **Chess Mode** in the studio navigation. Choose a chess model and use the built-in examples, import a Hugging Face sample, or upload UTF-8 JSONL or annotated PGN. Chess runs use completion-only training with a 512-token context, an extended Magic 8k tokenizer, and a structured prompt with FEN, SAN and UCI moves, verified board facts, and available engine scores or principal variations. The Lichess adapter applies the opponent's setup move and builds a literal explanation from the legal puzzle solution. The ChessExplained adapter uses the source explanation.
+
+Choose a **Streaming** entry to train directly from Hugging Face. The chess catalog includes LAION Strategic Game Chess, 400M Full Chess Match, Lichess Position Evaluations, ChessExplained, Waterhorse Chess Data, and Chess Positions Lichess Stockfish. Game streams replay legal moves, evaluation streams keep archived scores, and Waterhorse uses the free annotated PGN archive. Continuing from a chess checkpoint resumes the pinned stream when the same dataset is selected.
+
+Each JSONL line needs a `fen`, a `move` in SAN or UCI (or a `pv`), and an `explanation`. For PGN, attach an explanation as a comment after each move you want to train on. The built-in examples and the fixed benchmark are generated from distinct positions. Chess training also excludes benchmark positions from imported data and corrections.
+
+Set `STOCKFISH_PATH` on the backend or enter the executable path in **Chess Training → Stockfish settings**. The studio also detects `stockfish` on PATH. Turning on Stockfish adds engine analysis during training and evaluation. This increases runtime. Board checks continue when the engine is unavailable.
+
+The default benchmark runs 50 positions at each evaluation interval and at the final training step. You can use up to 200 positions. **Accuracy** charts comparable reports for a run and can evaluate any saved chess checkpoint on demand. Full reports live under `checkpoints/.chess-eval/`, with separate records for automatic and manual evaluations. Composite accuracy weights grounding, legality, and tactics at 25 each, theme F1 at 15, and Stockfish verdict agreement at 10. The score normalizes over available metrics. Piece hallucination rate counts positions with at least one false piece-square claim. The verifier checks recognized claims and reports their exact text spans.
+
+In **Position Sandbox**, choose a checkpoint and a legal move from a FEN or a ply from a PGN. The board shows the position before and after the move. **Save Verified Chess Correction** runs the same verifier before adding the edited explanation to future chess runs. The API is listed under `/api/chess` in the studio's OpenAPI docs.
+
 ## Architecture and learning code
 
 ```text

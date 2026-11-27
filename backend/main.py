@@ -5,6 +5,7 @@ import os
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, FileResponse
@@ -23,6 +24,7 @@ from .api.schemas import HubImportRequest
 from .api.schemas import TeachingRequest, TeachingApproval
 from .gemini_client import GeminiService, GeminiSettings
 from .teaching import TeachingJobs
+from .api.chess import chess_router
 
 
 def create_app(root=None):
@@ -60,6 +62,8 @@ def create_app(root=None):
     @app.exception_handler(ValueError)
     async def bad_request(request, exc):
         return JSONResponse(status_code=400, content={'detail': str(exc)})
+
+    app.include_router(chess_router(trainer, store))
 
     @app.get('/api/health')
     def health():
@@ -181,10 +185,12 @@ def create_app(root=None):
 
     @app.get('/api/runs')
     def runs():
-        return [{**row, 'config': json.loads(row['config'])} for row in store.rows('SELECT * FROM runs ORDER BY created_at DESC')]
+        return trainer.run_history('text')
 
     @app.get('/api/runs/{run_id}/metrics')
     def metrics(run_id: str):
+        if trainer.is_chess_run(run_id):
+            return []
         return [json.loads(row['payload']) for row in store.rows('SELECT payload FROM metrics WHERE run_id=? ORDER BY id', (run_id,))]
 
     @app.post('/api/training/start')
@@ -193,22 +199,29 @@ def create_app(root=None):
 
     @app.post('/api/training/pause')
     def pause():
+        trainer.require_text()
         return trainer.pause()
 
     @app.post('/api/training/resume')
     def resume():
+        trainer.require_text()
         return trainer.resume()
 
     @app.post('/api/training/stop')
     def stop():
+        trainer.require_text()
         return trainer.stop()
 
     @app.get('/api/checkpoints')
     def checkpoints():
-        return trainer.checkpoints()
+        return trainer.checkpoints('text')
+
+    def register_upload(pending, name, mode):
+        with trainer.lock:
+            return register_checkpoint(pending, trainer.directory, name, mode)
 
     @app.post('/api/checkpoints/upload')
-    async def upload_checkpoint(file: UploadFile = File(...)):
+    async def upload_checkpoint(file: UploadFile = File(...), mode: Literal['text', 'chess'] = 'text'):
         name=file.filename or ''
         if Path(name).name!=name or '\\' in name or not name.endswith('.pt') or name.startswith('.'):
             raise ValueError('Upload a .pt checkpoint filename.')
@@ -224,13 +237,15 @@ def create_app(root=None):
                     if size>16*1024*1024*1024:
                         raise ValueError('Checkpoint uploads must be smaller than 16 GiB.')
                     target.write(chunk)
-            return await asyncio.to_thread(register_checkpoint,pending,trainer.directory,name)
+            return await asyncio.to_thread(register_upload, pending, name, mode)
         finally:
             Path(pending).unlink(missing_ok=True)
 
     @app.post('/api/checkpoints/save')
     def save_checkpoint():
-        return trainer.save()
+        with trainer.lock:
+            trainer.require_text()
+            return trainer.save()
 
     @app.post('/api/checkpoints/select')
     def select(body: CheckpointSelection):
@@ -249,11 +264,15 @@ def create_app(root=None):
             path = trainer.checkpoint_path(name)
             path.unlink()
             path.with_suffix('.json').unlink(missing_ok=True)
+            trainer.chess_reports.delete(name)
         return {'ok': True}
 
     @app.get('/api/timeline')
     def timeline(run_id: str | None = None):
-        return store.rows('SELECT * FROM timeline WHERE run_id=? ORDER BY step,id', (run_id or trainer.run_id,))
+        run = run_id or trainer.run_id
+        if trainer.is_chess_run(run):
+            return []
+        return store.rows('SELECT * FROM timeline WHERE run_id=? ORDER BY step,id', (run,))
 
     @app.put('/api/prompts')
     def prompts(body: Prompts):
@@ -295,7 +314,7 @@ def create_app(root=None):
     def feedback(kind: str | None = None):
         if kind and kind not in ('sft', 'preference'):
             raise ValueError('Unknown feedback kind.')
-        return store.feedback(kind)
+        return [row for row in store.feedback(kind) if row['kind'] != 'chess-sft']
 
     @app.post('/api/feedback')
     def add_feedback(body: Feedback):
@@ -304,18 +323,18 @@ def create_app(root=None):
 
     @app.put('/api/feedback/{item_id}')
     def edit_feedback(item_id: int, body: Feedback):
-        if not store.rows('SELECT id FROM feedback WHERE id=?', (item_id,)):
+        if not store.rows("SELECT id FROM feedback WHERE id=? AND kind!='chess-sft'", (item_id,)):
             raise HTTPException(404, 'Feedback not found.')
         return {'id': store.save_feedback(body.kind, body.model_dump(exclude={'kind'}), item_id)}
 
     @app.delete('/api/feedback/{item_id}')
     def delete_feedback(item_id: int):
-        store.execute('DELETE FROM feedback WHERE id=?', (item_id,))
+        store.execute("DELETE FROM feedback WHERE id=? AND kind!='chess-sft'", (item_id,))
         return {'ok': True}
 
     @app.get('/api/feedback-export')
     def export(kind: str | None = None):
-        text = '\n'.join(json.dumps(row, ensure_ascii=False) for row in store.feedback(kind))
+        text = '\n'.join(json.dumps(row, ensure_ascii=False) for row in feedback(kind))
         return Response(text + ('\n' if text else ''), media_type='application/x-ndjson',
                         headers={'Content-Disposition': 'attachment; filename="nanoforge-feedback.jsonl"'})
 

@@ -11,6 +11,8 @@ import numpy as np
 import pyarrow.parquet as parquet
 import torch
 
+from ..chess_pipeline import adapt_stream_row, format_example
+from ..importers.chess_sources import CHESS_STREAMS, chess_rows, resolve_chess_manifest
 from ..importers.hub import BY_ID, authenticated_request, get_json, normalize, supports_streaming
 from ..importers.expanded import PRETRAINING_IDS
 from ..importers.ranges import remote_file
@@ -97,6 +99,20 @@ class RemoteTokens:
     def _texts(self, manifest, cursor, validation) -> Iterator:
         first_shard, first_group, first_row, _, _ = cursor
         source_id = self.source['id']
+        if source_id in CHESS_STREAMS:
+            for location, row in chess_rows(source_id, manifest, cursor[:3], self.cancelled):
+                if (location[2] % 10 == 0) != validation:
+                    continue
+                try:
+                    records = [format_example(example.context(), example.explanation, example.themes)
+                               for example in adapt_stream_row(source_id, row)]
+                except (ValueError, TypeError, KeyError):
+                    continue
+                if records:
+                    text = '\n'.join(record_text({'prompt': prompt, 'completion': completion})
+                                     for prompt, completion in records)
+                    yield location, text + '\n'
+            return
         columns = None
         if source_id in PRETRAINING_IDS or source_id in ('tinystories', 'cosmopedia-v2'):
             columns = ['text']
@@ -163,7 +179,11 @@ class RemoteTokens:
         from itertools import islice
 
         try:
-            manifest = self.manifest or resolve_manifest(self.source)
+            manifest = self.manifest
+            if manifest is None:
+                source_id = self.source['id']
+                manifest = (resolve_chess_manifest(source_id, self.cancelled) if source_id in CHESS_STREAMS
+                            else resolve_manifest(self.source))
             origin = (0, 0, 0, 0, 0)
             with_validation = self._windows(manifest, origin, validation=True)
             try:

@@ -38,14 +38,17 @@ def fixed_pretrain_batch(mixer, batch_size, rng, validation=False):
     return torch.stack(xs),torch.stack(ys)
 
 
-def fixed_completion_batch(tokenizer,pairs,block_size,completion_key='corrected_output'):
-    xs=torch.zeros((len(pairs),block_size),dtype=torch.long)
-    ys=torch.full_like(xs,-100)
-    for index,pair in enumerate(pairs):
-        x,y=completion_batch(tokenizer,pair['prompt'],pair[completion_key],block_size,'cpu')
-        xs[index,:x.shape[1]]=x[0]
-        ys[index,:y.shape[1]]=y[0]
-    return xs,ys
+def fixed_completion_batch(tokenizer,pairs,block_size,completion_key='corrected_output', *,
+                           max_target_tokens=None, pad_to_block=True):
+    rows = [completion_batch(tokenizer, pair['prompt'], pair[completion_key], block_size, 'cpu',
+                             max_target_tokens=max_target_tokens) for pair in pairs]
+    width = block_size if pad_to_block else max(x.shape[1] for x, _ in rows)
+    xs = torch.zeros((len(pairs), width), dtype=torch.long)
+    ys = torch.full_like(xs, -100)
+    for index, (x, y) in enumerate(rows):
+        xs[index, :x.shape[1]] = x[0]
+        ys[index, :y.shape[1]] = y[0]
+    return xs, ys
 
 
 def log_probabilities(model,x,y):

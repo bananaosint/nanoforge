@@ -1,6 +1,7 @@
 """Single-owner background training with explicit CE, SFT, and DPO objectives."""
 import copy
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
+from functools import lru_cache, partial
 import json
 import math
 import random
@@ -9,6 +10,7 @@ import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
+import chess.engine
 import torch
 from torch.nn import functional as F
 from .model import GPT, ModelConfig, resolve_model, parameter_count, active_parameter_count, export_config, MAX_PARAMETERS, detect_device, device_name
@@ -19,8 +21,12 @@ from .corpus import FileCorpus, vocabulary_text, PairPool
 from .parallel import ReplicaLoss, reduced_loss
 from .xla_training import fixed_completion_batch
 from ..storage import now
+from ..chess_eval import ChessReports, MAX_NEW_TOKENS, evaluate_checkpoint
+from ..chess_pipeline import ChessDatasets, ChessExampleStream, STRUCTURAL_TOKENS, format_example, open_stockfish
 from ..gemini_client import GeminiService
 from ..watchdog import CheckpointWatchdog
+
+CHESS_CONTEXT = 512
 
 DEFAULT_PROMPTS = ['First Citizen:', 'To be, or not to be', 'The meaning of life is']
 
@@ -30,6 +36,9 @@ class Trainer:
         self.datasets, self.store = datasets, store
         self.directory = Path(checkpoint_dir)
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.chess_datasets = ChessDatasets(datasets.directory / '.chess', store)
+        self.chess_reports = ChessReports(self.directory)
+        self.chess_evaluating_step = None
         self.device = device or detect_device()
         # Tiny CPU models often run slower with dozens of OpenMP threads.
         if self.device == 'cpu':
@@ -165,13 +174,16 @@ class Trainer:
             self.step, self.val_loss, self.checkpoint = 0, None, None
             self.target_step = None
             self._branch_pending = False
-            self.mode, self.state, self.error = 'pretrain', 'ready', None
+            self.mode = 'chess' if config.get('mode') == 'chess' else 'pretrain'
+            self.state, self.error = 'ready', None
             self.watchdog.reset()
             self.stream_state = None
             self._new_run(config)
             return self.status()
 
     def _new_tokenizer(self, config):
+        if config.get('mode') == 'chess':
+            return Tokenizer('magic8k', structural_tokens=(*STRUCTURAL_TOKENS, '<|end|>'))
         local, remote = self._partition_sources(config.get('datasets', []))
         kind = config.get('tokenizer', 'char')
         if remote and kind == 'char':
@@ -217,6 +229,15 @@ class Trainer:
         self.metrics = []
         self.store.execute('INSERT INTO runs VALUES(?,?,?)', (self.run_id, json.dumps(config), now()))
 
+    def is_chess_run(self, run_id):
+        rows = self.store.rows('SELECT config FROM runs WHERE id=?', (run_id,))
+        return bool(rows and json.loads(rows[0]['config']).get('mode') == 'chess')
+
+    def run_history(self, mode):
+        rows = self.store.rows('SELECT * FROM runs ORDER BY created_at DESC')
+        runs = [{**row, 'config': json.loads(row['config'])} for row in rows]
+        return [{**row, 'mode': mode} for row in runs if (row['config'].get('mode') == 'chess') == (mode == 'chess')]
+
     def _texts(self, sources):
         texts = []
         for source in sources:
@@ -233,7 +254,29 @@ class Trainer:
             raise ValueError('Select at least one dataset with a positive weight.')
         return texts
 
-    def start(self, config, *, background=True, evaluate=True, time_budget_seconds=None):
+    def start_chess(self, config, checkpoint=None, engine_path=None):
+        examples = self.chess_datasets.examples(config['dataset'])
+        with self.lock:
+            self.require_idle()
+            options = {**config, 'mode': 'chess', 'tokenizer': 'magic8k',
+                       'model': {'block_size': CHESS_CONTEXT}, 'watchdog_enabled': False,
+                       'datasets': [], 'base_mix': 0}
+            self._configure_precision(options)
+            if checkpoint:
+                self.load(checkpoint, expected_mode='chess')
+                if self.model.config.block_size < CHESS_CONTEXT:
+                    raise ValueError('Chess training requires a context of at least 512 tokens.')
+                options['preset'] = self.config.get('preset', options['preset'])
+                options['model'] = self.config.get('model', {'block_size': self.model.config.block_size})
+            else:
+                self.create(options)
+            return self.start(options, chess_examples=examples, chess_engine_path=engine_path)
+
+    def require_text(self):
+        if self.mode == 'chess':
+            raise ValueError('Create a text run or select a text checkpoint first.')
+
+    def start(self, config, *, background=True, evaluate=True, time_budget_seconds=None, chess_examples=None, chess_engine_path=None):
         with self.lock:
             if self.model is None:
                 raise ValueError('Create a model run or select a checkpoint first.')
@@ -241,12 +284,16 @@ class Trainer:
                 raise ValueError('A run is already active. Use Resume for a paused run.')
             options = {**self.config, **config}
             mode = options.get('mode', 'pretrain')
+            if (mode == 'chess') != (self.mode == 'chess') or (mode == 'chess' and chess_examples is None):
+                raise ValueError('Start chess training through the Chess Mode run endpoint.')
             self._configure_precision(options)
             self._configure_parallel(options,validate_only=True)
             mixer = None
             pairs = []
             local, remote = self._partition_sources(options.get('datasets', []))
-            if mode == 'pretrain':
+            if mode == 'chess':
+                pairs = chess_examples
+            elif mode == 'pretrain':
                 mixer = self._mixer(local, remote)
             else:
                 corpora = [FileCorpus(self.datasets.path(s['name'])) for s in local if s['name'] != 'hitl']
@@ -278,17 +325,46 @@ class Trainer:
             if self.stream_mixer:
                 self.stream_state = self.stream_mixer.state()
             if background:
-                self.thread = threading.Thread(target=self._train, args=(options, mixer, pairs, reference, evaluate, time_budget_seconds), daemon=False, name='nanoforge-trainer')
+                self.thread = threading.Thread(target=self._train, args=(options, mixer, pairs, reference, evaluate, time_budget_seconds, chess_engine_path), daemon=False, name='nanoforge-trainer')
                 self.thread.start()
                 return self.status()
             self.thread = None
             self._synchronous_running = True
-        self._train(options,mixer,pairs,reference,evaluate,time_budget_seconds)
+        self._train(options, mixer, pairs, reference, evaluate, time_budget_seconds, chess_engine_path)
         return self.status()
 
-    def _train(self, options, mixer, pairs, reference, evaluate=True, time_budget_seconds=None):
+    def _train(self, options, mixer, pairs, reference, evaluate=True, time_budget_seconds=None, chess_engine_path=None):
         deadline=None if time_budget_seconds is None else time.monotonic()+max(0,time_budget_seconds)
+        resources = ExitStack()
+        chess_stream = None
         try:
+            if self.mode == 'chess':
+                dataset = options['dataset']
+                if dataset.startswith('hf:'):
+                    previous = self.stream_state or {}
+                    state = previous if previous.get('dataset') == dataset else None
+                    self.stream_state = state
+                    chess_stream = ChessExampleStream(dataset.removeprefix('hf:'), self.stop_event.is_set, state)
+                    resources.callback(chess_stream.close)
+                else:
+                    self.stream_state = None
+                engine_resources = resources.enter_context(ExitStack())
+                engine = engine_resources.enter_context(open_stockfish(chess_engine_path))
+
+                @lru_cache(maxsize=2048)
+                def chess_pair(example):
+                    nonlocal engine
+                    try:
+                        context = example.context(engine)
+                    except (OSError, chess.engine.EngineError, TimeoutError):
+                        if engine is None:
+                            raise
+                        engine_resources.close()
+                        engine = None
+                        context = example.context()
+                    prompt, completion = format_example(context, example.explanation, example.themes)
+                    return {'prompt': prompt, 'corrected_output': completion}
+
             if evaluate and self.mode == 'pretrain':
                 with self.lock:
                     self._evaluate(mixer)
@@ -331,6 +407,24 @@ class Trainer:
                             elif self.parallel is not None:
                                 loss,count=self._parallel_completion_loss(pairs,self.mode,options)
                                 tokens+=count
+                            elif self.mode == 'chess':
+                                batch_size = options.get('batch_size', 8)
+                                if chess_stream is None:
+                                    examples = random.choices(pairs, k=batch_size)
+                                else:
+                                    try:
+                                        examples = [next(chess_stream)]
+                                        for _ in range(batch_size - 1):
+                                            examples.append(random.choice(pairs) if pairs and random.random() < 0.1 else next(chess_stream))
+                                    except InterruptedError:
+                                        raise
+                                    except (OSError, ValueError) as exc:
+                                        raise StreamingError(f'{dataset}: {exc}') from exc
+                                selected = [chess_pair(example) for example in examples]
+                                x, y = fixed_completion_batch(self.tokenizer, selected, self.model.config.block_size,
+                                                              max_target_tokens=128, pad_to_block=False)
+                                loss = self.model(x.to(self.device), y.to(self.device))['loss']
+                                tokens += int((y != -100).sum())
                             elif self.mode == 'sft':
                                 losses = []
                                 for pair in random.choices(pairs, k=options.get('batch_size', 8)):
@@ -375,6 +469,8 @@ class Trainer:
                     self.step += 1
                     if self.stream_mixer:
                         self.stream_state = self.stream_mixer.state()
+                    if chess_stream is not None:
+                        self.stream_state = chess_stream.state()
                     elapsed = max(time.perf_counter() - began, 1e-9)
                     metric = {'step': self.step, 'train_loss': total, 'val_loss': None, 'steps_per_sec': 1 / elapsed,
                               'tokens_per_sec': tokens / elapsed, 'mode': self.mode}
@@ -391,14 +487,17 @@ class Trainer:
                     self.metrics.append(metric)
                     self.metrics = self.metrics[-3000:]
                     self.store.execute('INSERT INTO metrics(run_id,payload) VALUES(?,?)', (self.run_id, json.dumps(metric)))
-                    if self.step % interval == 0:
-                        self._save()
+                    chess_evaluation = self.mode == 'chess' and (self.step % interval == 0 or self.step == target)
+                    checkpoint = self._save() if chess_evaluation or self.step % interval == 0 else None
                     self.watchdog.boundary()
+                if chess_evaluation:
+                    self._evaluate_chess(checkpoint, options['benchmark_size'], chess_engine_path)
             with self.lock:
-                self._save()
+                if self.mode != 'chess' or not self.checkpoint or self.checkpoint != f'chess-{self.run_id}-s{self.step}.pt':
+                    self._save()
                 self.state = 'stopped' if self.stop_event.is_set() else 'completed'
         except (StreamingError, InterruptedError) as exc:
-            if not self.stream_mixer:
+            if not self.stream_mixer and chess_stream is None:
                 self.state, self.error = 'error', str(exc)
             else:
                 with self.lock:
@@ -412,6 +511,7 @@ class Trainer:
             with self.lock:
                 self.state, self.error = 'error', str(exc)
         finally:
+            resources.close()
             if self.stream_mixer:
                 self.stream_mixer.close()
                 self.stream_mixer = None
@@ -432,6 +532,22 @@ class Trainer:
             for prompt in self.prompts:
                 result = self._generate(prompt, max_new_tokens=40, telemetry=False, seed=7)
                 self.store.execute('INSERT INTO timeline(run_id,step,prompt,output) VALUES(?,?,?,?)', (self.run_id, self.step, prompt, result['text']))
+
+    def _evaluate_chess(self, checkpoint, size, engine_path):
+        self.chess_evaluating_step = self.step
+        try:
+            generate = partial(self._generate_chess, self.model, self.tokenizer)
+            generate_batch = partial(self._generate_chess_batch, self.model, self.tokenizer)
+            report = evaluate_checkpoint(generate, checkpoint['name'], self.run_id, self.step, size, engine_path,
+                                         generate_batch=generate_batch)
+            self.chess_reports.save(report, 'automatic')
+            with self.lock:
+                metric = self.metrics[-1]
+                metric['chess_accuracy'] = report['metrics']
+                self.store.execute('UPDATE metrics SET payload=? WHERE id=(SELECT MAX(id) FROM metrics WHERE run_id=?)',
+                                   (json.dumps(metric), self.run_id))
+        finally:
+            self.chess_evaluating_step = None
 
     def pause(self):
         if self.state != 'running':
@@ -492,19 +608,28 @@ class Trainer:
                 raise ValueError('No model to save.')
             return self._save()
 
-    def checkpoints(self):
-        return sorted([json.loads(p.read_text()) for p in self.directory.glob('*.json')], key=lambda r: r['created_at'], reverse=True)
+    def checkpoints(self, expected_mode=None):
+        rows = [json.loads(p.read_text()) for p in self.directory.glob('*.json')]
+        if expected_mode is not None:
+            rows = [row for row in rows if (row.get('mode') == 'chess') == (expected_mode == 'chess')]
+        return sorted(rows, key=lambda row: row['created_at'], reverse=True)
 
     def checkpoint_path(self, name):
         if Path(name).name != name or not name.endswith('.pt') or not (self.directory / name).is_file():
             raise ValueError('Checkpoint not found.')
         return self.directory / name
 
-    def load(self, name):
+    def checkpoint_payload(self, name, expected_mode):
+        payload = torch.load(self.checkpoint_path(name), map_location='cpu', weights_only=True)
+        if (payload.get('mode') == 'chess') != (expected_mode == 'chess'):
+            raise ValueError('Choose a checkpoint from the current studio mode.')
+        return payload
+
+    def load(self, name, expected_mode='text'):
         with self.lock:
             self.require_idle()
             # Files are produced locally by NanoForge. weights_only avoids arbitrary pickle code.
-            payload = torch.load(self.checkpoint_path(name), map_location=self.device, weights_only=True)
+            payload = self.checkpoint_payload(name, expected_mode)
             model = GPT(ModelConfig(**payload['model_config'])).to(self.device)
             model.load_state_dict(payload['model_state_dict'])
             self.parallel = None
@@ -589,16 +714,74 @@ class Trainer:
                 'context_tokens': [tokenizer.decode_token(i) for i in result['context_ids']],
                 'checkpoint': self.checkpoint, 'seed': seed}
 
+    @staticmethod
+    def _generate_chess(model, tokenizer, prompt):
+        ids = torch.tensor([tokenizer.encode(format_prompt(prompt))], device=model.token_embedding.weight.device)
+        end = tokenizer.encode('<|end|>')
+        result = model.generate(ids, max_new_tokens=MAX_NEW_TOKENS, greedy=True,
+                                stop_token_id=end[0] if len(end) == 1 else None)
+        return tokenizer.decode(result['ids'][0, ids.size(1):].tolist()).split('<|end|>', 1)[0].strip()
+
+    @staticmethod
+    @torch.inference_mode()
+    def _generate_chess_batch(model, tokenizer, prompts):
+        prefixes = [tokenizer.encode(format_prompt(prompt)) for prompt in prompts]
+        width = max(map(len, prefixes))
+        stop = tokenizer.encode('<|end|>')
+        if len(stop) != 1 or width + MAX_NEW_TOKENS > model.config.block_size:
+            return [Trainer._generate_chess(model, tokenizer, prompt) for prompt in prompts]
+
+        device = model.token_embedding.weight.device
+        positions = torch.tensor([len(prefix) for prefix in prefixes], device=device)
+        rows = torch.arange(len(prefixes), device=device)
+        ids = torch.zeros((len(prefixes), width + MAX_NEW_TOKENS), dtype=torch.long, device=device)
+        for row, prefix in enumerate(prefixes):
+            ids[row, :len(prefix)] = torch.tensor(prefix, device=device)
+        stopped = torch.zeros(len(prefixes), dtype=torch.bool, device=device)
+        tokens = []
+        was_training = model.training
+        model.eval()
+        try:
+            for offset in range(MAX_NEW_TOKENS):
+                # Pads are to the right of each real sequence. Causal attention cannot see them.
+                output = model(ids[:, :width + offset], logits_positions=positions - 1)
+                token = output['logits'][:, 0].argmax(dim=-1)
+                token = torch.where(stopped, stop[0], token)
+                ids[rows, positions] = token
+                positions += 1
+                tokens.append(token)
+                stopped |= token == stop[0]
+                if bool(stopped.all()):
+                    break
+        finally:
+            model.train(was_training)
+
+        sequences = torch.stack(tokens, dim=1).tolist()
+        return [tokenizer.decode(row[:row.index(stop[0])] if stop[0] in row else row).strip() for row in sequences]
+
+    def chess_generator(self, checkpoint):
+        with self.lock:
+            payload = self.checkpoint_payload(checkpoint, 'chess')
+        with torch.device('meta'):
+            model = GPT(ModelConfig(**payload['model_config']))
+        model.load_state_dict(payload['model_state_dict'], assign=True)
+        model = model.to(self.device).eval()
+        tokenizer = Tokenizer(state=payload['tokenizer_state'])
+        meta = {'run_id': payload.get('run_id'), 'step': payload['step'], 'config': payload.get('training_config', {})}
+        return partial(self._generate_chess, model, tokenizer), partial(self._generate_chess_batch, model, tokenizer), meta
+
     def generate(self, **kwargs):
         with self.lock:
+            self.require_text()
             return self._generate(**kwargs)
 
     def generate_from(self, checkpoint=None, **kwargs):
         with self.lock:
             if not checkpoint or checkpoint == self.checkpoint:
+                self.require_text()
                 result = self._generate(**kwargs)
             else:
-                payload = torch.load(self.checkpoint_path(checkpoint), map_location=self.device, weights_only=True)
+                payload = self.checkpoint_payload(checkpoint, 'text')
                 model = GPT(ModelConfig(**payload['model_config'])).to(self.device).eval()
                 model.load_state_dict(payload['model_state_dict'])
                 result = self._generate(**kwargs, model=model, tokenizer=Tokenizer(state=payload['tokenizer_state']), mode=payload.get('mode', 'pretrain'))
@@ -625,4 +808,4 @@ class Trainer:
                 'run_id': self.run_id, 'checkpoint': self.checkpoint, 'error': self.error, 'val_loss': self.val_loss,
                 'parameters': sum(p.numel() for p in self.model.parameters()) if self.model else 0,
                 'model_config': asdict(self.model.config) if self.model else None, 'config': self.config,
-                'metrics': self.metrics[-3000:], 'prompts': self.prompts,'watchdog':self.watchdog.status()}
+                'metrics': self.metrics[-3000:], 'chess_evaluating_step': self.chess_evaluating_step, 'prompts': self.prompts,'watchdog':self.watchdog.status()}

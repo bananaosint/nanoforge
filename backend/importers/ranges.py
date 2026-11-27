@@ -5,11 +5,12 @@ import time
 
 
 class RangeReader(io.RawIOBase):
-    def __init__(self,size,fetch,block_size=4*1024*1024):
+    def __init__(self,size,fetch,block_size=4*1024*1024,*,max_read_size=128*1024*1024):
         super().__init__()
         self.size=size
         self.fetch=fetch
         self.block_size=block_size
+        self.max_read_size=max_read_size
         self.position=0
         self.blocks=OrderedDict()
 
@@ -25,8 +26,8 @@ class RangeReader(io.RawIOBase):
 
     def read(self,size=-1):
         size=max(0,self.size-self.position) if size<0 else min(size,max(0,self.size-self.position))
-        if size>128*1024*1024:
-            raise OSError('A Parquet sample read exceeds 128 MiB. Use a full streamed import for this source.')
+        if size>self.max_read_size:
+            raise OSError(f'A Parquet range read exceeds {self.max_read_size // (1024 * 1024)} MiB.')
         output=[]
         while size:
             index=self.position//self.block_size
@@ -50,7 +51,7 @@ class RangeReader(io.RawIOBase):
         return len(data)
 
 
-def remote_file(shard, request, open_url, cancelled, timeout=15):
+def remote_file(shard, request, open_url, cancelled, timeout=15, *, max_read_size=128*1024*1024):
     """Share range validation between sampling and training."""
     def fetch(start, end):
         if cancelled():
@@ -68,4 +69,4 @@ def remote_file(shard, request, open_url, cancelled, timeout=15):
                 data = response.read(shard['size'] + 1)
                 return data[start:end + 1]
             raise OSError('Server ignored HTTP range requests. Use Local cache for this dataset.')
-    return RangeReader(shard['size'], fetch)
+    return RangeReader(shard['size'], fetch, max_read_size=max_read_size)

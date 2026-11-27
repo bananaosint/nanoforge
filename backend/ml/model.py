@@ -194,7 +194,7 @@ class GPT(nn.Module):
         if isinstance(module, nn.Linear) and module.bias is not None:
             nn.init.zeros_(module.bias)
 
-    def forward(self, ids, targets=None, inspect=False):
+    def forward(self, ids, targets=None, inspect=False, *, last_token_only=False, logits_positions=None):
         time = ids.size(1)
         if time > self.config.block_size:
             raise ValueError('Input exceeds the context window.')
@@ -207,6 +207,11 @@ class GPT(nn.Module):
             auxiliaries.append(auxiliary)
             if inspect:
                 attentions.append(weights)
+        if logits_positions is not None:
+            rows = torch.arange(x.size(0), device=x.device)
+            x = x[rows, logits_positions].unsqueeze(1)
+        elif last_token_only:
+            x = x[:, -1:]
         logits = self.lm_head(self.norm(x))
         loss = None if targets is None else F.cross_entropy(logits.float().reshape(-1, logits.size(-1)), targets.reshape(-1), ignore_index=-100)
         auxiliary=torch.stack(auxiliaries).mean()
@@ -219,7 +224,7 @@ class GPT(nn.Module):
                 'expert_load_pct':torch.stack([s[2] for s in stats]) if stats else None}
 
     @torch.no_grad()
-    def generate(self, ids, max_new_tokens=64, temperature=0.8, top_k=40, telemetry=False, seed=42):
+    def generate(self, ids, max_new_tokens=64, temperature=0.8, top_k=40, telemetry=False, seed=42, *, greedy=False, stop_token_id=None):
         if ids.size(1) == 0:
             raise ValueError('Enter a nonempty prompt.')
         was_training = self.training
@@ -229,13 +234,20 @@ class GPT(nn.Module):
         try:
             for _ in range(max_new_tokens):
                 context = ids[:, -self.config.block_size:]
-                logits = self(context)['logits'][:, -1, :].float() / max(temperature, 0.01)
-                if top_k > 0:
+                logits = self(context, last_token_only=greedy)['logits'][:, -1, :].float() / max(temperature, 0.01)
+                if not greedy and top_k > 0:
                     cutoff = logits.topk(min(top_k, logits.size(-1))).values[:, -1:]
                     logits = logits.masked_fill(logits < cutoff, float('-inf'))
-                probabilities = logits.softmax(-1)
-                token = torch.multinomial(probabilities.cpu(), 1, generator=generator).to(ids.device)
+                if greedy:
+                    token = logits.argmax(dim=-1, keepdim=True)
+                else:
+                    probabilities = logits.softmax(-1)
+                    token = torch.multinomial(probabilities.cpu(), 1, generator=generator).to(ids.device)
+                if stop_token_id is not None and token.item() == stop_token_id:
+                    break
                 if telemetry:
+                    if greedy:
+                        probabilities = logits.softmax(-1)
                     values, indices = probabilities[0].topk(min(5, probabilities.size(-1)))
                     steps.append({'token_id': token.item(), 'top5': [
                         {'id': i, 'probability': p} for i, p in zip(indices.tolist(), values.tolist())]})

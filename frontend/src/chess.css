@@ -1,0 +1,180 @@
+.studio-navigation { justify-content: flex-start; gap: 25px; }
+.studio-switch, .chess-segment {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #30363f;
+  border-radius: 7px;
+  background: #0e1116;
+}
+.studio-switch button, .chess-segment button {
+  padding: 7px 10px;
+  border-radius: 4px;
+  color: #a0aab8;
+  font-size: .75rem;
+  white-space: nowrap;
+}
+.studio-switch button[aria-pressed="true"], .chess-segment button[aria-pressed="true"] {
+  background: #263124;
+  color: #d0f2bc;
+}
+.studio-switch button:hover, .chess-segment button:hover { color: #eef7e8; }
+.studio-navigation .nav-caption { margin-left: auto; }
+
+.chess-workspace { max-width: 1320px; }
+.chess-workspace .page-heading { align-items: center; }
+.chess-training-grid, .chess-sandbox-grid { display: grid; gap: 22px; align-items: start; }
+.chess-training-grid { grid-template-columns: minmax(310px, .84fr) minmax(0, 1.16fr); }
+.chess-sandbox-grid { grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr); }
+.chess-stack { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.chess-panel { min-width: 0; }
+.chess-panel-body { display: flex; flex-direction: column; gap: 16px; padding: 20px; }
+.chess-fields { min-width: 0; padding: 0; margin: 0; border: 0; display: flex; flex-direction: column; gap: 16px; }
+.chess-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.chess-actions, .chess-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.chess-toolbar { flex-direction: row; align-items: end; gap: 14px; }
+.chess-toolbar > .field { flex: 1 1 220px; max-width: 435px; }
+.chess-curve-filters > .field { flex-basis: 200px; max-width: 300px; }
+.chess-fit, .chess-segment { align-self: flex-start; }
+.chess-checkbox { display: flex; align-items: center; gap: 9px; color: #b4becb; font-size: .8125rem; }
+.chess-checkbox input { width: 16px; height: 16px; accent-color: var(--green); flex-shrink: 0; }
+.chess-break { overflow-wrap: anywhere; }
+.chess-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 6px 9px;
+  border: 1px solid #353c46;
+  border-radius: 5px;
+  color: #a5aebb;
+  background: #1b2027;
+  font-size: .75rem;
+  white-space: nowrap;
+}
+.chess-pill.good { border-color: #405538; background: #223021; color: #b5e5a2; }
+.chess-pill.bad { border-color: #713e39; background: #352422; color: #ffb3a6; }
+.chess-notice { margin-bottom: 18px; }
+.chess-success { display: flex; gap: 8px; align-items: center; color: #b4e3a2; font-size: .8125rem; }
+.chess-code {
+  margin: 0;
+  padding: 15px;
+  color: #b9c3cf;
+  background: #0e1116;
+  border: 1px solid #2c323c;
+  border-radius: 6px;
+  font: .78rem/1.75 ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chess-code strong { color: #c3e6a9; }
+.chess-target { display: grid; gap: 5px; }
+.chess-target p { font-size: .875rem; color: #cbd2db; }
+.chess-run-stats, .chess-metric-grid { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.chess-metric-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.chess-run-stats > div, .chess-metric-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  background: #151920;
+  border: 1px solid #2b3038;
+  border-radius: 6px;
+}
+.chess-run-stats span, .chess-metric-grid span { color: #a9b2be; font-size: .72rem; }
+.chess-metric-grid span { display: flex; align-items: center; gap: 7px; }
+.chess-metric-grid i { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.chess-run-stats strong, .chess-metric-grid strong {
+  font: 500 1.4rem 'Space Grotesk', sans-serif;
+  letter-spacing: -.5px;
+}
+.chess-panel progress { width: 100%; height: 5px; accent-color: var(--green); }
+.chess-chart { height: 250px; width: 100%; }
+.chess-empty { padding: 22px 12px; color: #9aa5b4; text-align: center; font-size: .875rem; }
+.chess-table-scroll { overflow: auto; }
+.chess-table { min-width: 700px; width: 100%; font-size: .8125rem; text-align: left; }
+.chess-table th, .chess-table td { padding: 12px; vertical-align: top; border-bottom: 1px solid var(--line); }
+.chess-table th { color: #aeb9c8; font-weight: 600; }
+.chess-table td { color: #c8d0dc; }
+.chess-table td:first-child { width: 25%; }
+.chess-table td:nth-child(2) { width: 35%; }
+.chess-table code { display: block; margin-top: 6px; overflow-wrap: anywhere; color: #aab6c7; font-size: .7rem; }
+.chess-table ul, .chess-issues { display: grid; gap: 8px; margin: 0; padding-left: 16px; list-style-type: disc; }
+.chess-table li, .chess-issues li { color: #edb3a7; line-height: 1.55; overflow-wrap: anywhere; }
+
+.chess-board-wrap { display: flex; gap: 10px; }
+.chess-board { width: 100%; min-width: 0; border-radius: 6px; height: auto; }
+.chess-piece {
+  font: 45px 'DejaVu Sans', 'Segoe UI Symbol', 'Noto Sans Symbols 2', sans-serif;
+  paint-order: stroke;
+  stroke-width: 2px;
+  text-anchor: middle;
+}
+.chess-coordinate {
+  font: 600 10px 'DM Sans', sans-serif;
+  text-anchor: middle;
+}
+.chess-board-caption { display: flex; align-items: center; justify-content: space-between; color: #a6b1bf; font-size: .8125rem; }
+.chess-eval-bar {
+  width: 27px;
+  flex: 0 0 auto;
+  position: relative;
+  overflow: hidden;
+  background: #222932;
+  border-radius: 5px;
+  border: 1px solid #3a4048;
+}
+.chess-eval-bar div { position: absolute; bottom: 0; width: 100%; background: #edf0e4; }
+.chess-eval-bar span {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  color: #f3f5ee;
+  background: #242a33;
+  border-radius: 3px;
+  padding: 3px;
+  font: .66rem ui-monospace, monospace;
+  writing-mode: vertical-rl;
+  transform: translateX(-50%) rotate(180deg);
+}
+.chess-pv { padding: 11px; border: 1px solid var(--line); border-radius: 6px; }
+.chess-pv summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; color: #bac4d0; font-size: .79rem; }
+.chess-pv > div { display: flex; gap: 10px; padding-top: 10px; font-size: .75rem; }
+.chess-pv strong { color: #b8dda6; }
+.chess-pv code { overflow-wrap: anywhere; }
+.chess-explanation {
+  padding: 15px;
+  border: 1px solid #303640;
+  background: #0e1116;
+  border-radius: 6px;
+  line-height: 1.75;
+  font-size: .9rem;
+}
+.chess-input-mono { font-family: ui-monospace, monospace; font-size: .79rem; min-height: 64px; }
+.chess-highlighted { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chess-highlighted mark { background: #603934; color: #ffd8ce; border-radius: 2px; }
+.chess-verification { display: grid; gap: 12px; }
+.chess-issues { font-size: .8125rem; }
+
+@media (max-width: 950px) {
+  .studio-navigation { gap: 18px; }
+  .studio-navigation .nav-tabs { gap: 18px; }
+  .chess-training-grid, .chess-sandbox-grid { gap: 16px; }
+  .chess-run-stats strong, .chess-metric-grid strong { font-size: 1.15rem; }
+}
+@media (max-width: 750px) {
+  .studio-navigation { height: auto; min-height: 94px; flex-wrap: wrap; gap: 0; padding-top: 8px; }
+  .studio-navigation .studio-switch { margin-bottom: 1px; }
+  .studio-navigation .nav-tabs { width: 100%; height: 48px; overflow-x: auto; }
+  .chess-training-grid, .chess-sandbox-grid { grid-template-columns: 1fr; }
+  .chess-board-wrap { max-width: 470px; }
+  .chess-metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 420px) {
+  .chess-workspace .page-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .chess-panel-body { padding: 15px; }
+  .chess-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .chess-run-stats > div { padding: 9px; }
+}

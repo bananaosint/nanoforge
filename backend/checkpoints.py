@@ -9,7 +9,7 @@ from .ml.tokenizer import Tokenizer
 from .storage import now
 
 
-def register_checkpoint(source, directory, name=None):
+def register_checkpoint(source, directory, name=None, expected_mode=None):
     source=Path(source)
     directory=Path(directory)
     name=name or source.name
@@ -23,6 +23,8 @@ def register_checkpoint(source, directory, name=None):
         required={'model_config','tokenizer_state','model_state_dict','optimizer_state_dict','step','val_loss','version_tag'}
         if not isinstance(payload,dict) or not required <= payload.keys():
             raise ValueError('Expected a complete NanoForge checkpoint, not a bare state_dict.')
+        if expected_mode is not None and (payload.get('mode') == 'chess') != (expected_mode == 'chess'):
+            raise ValueError('Choose a checkpoint from the current studio mode.')
         if payload.get('checkpoint_format_version',1)!=1:
             raise ValueError('Unsupported NanoForge checkpoint format version.')
         config=ModelConfig(**payload['model_config'])

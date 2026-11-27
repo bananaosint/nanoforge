@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 from .translate import LocalTranslator, CJK
+from .chess_sources import CHESS_STREAMS
 from .expanded import EXTRA_CATALOG, EXTRA_IDS, normalize_extra
 from .raw_sources import persona_rows, cornell_rows, CORNELL_URL
 from urllib.error import HTTPError
@@ -26,6 +27,9 @@ CATALOG = [
 
 ]
 CATALOG.extend(EXTRA_CATALOG)
+CATALOG.extend({'id': key, **{field: source[field] for field in ('repo', 'label', 'size', 'license', 'note')},
+                'kind': 'sft', 'massive': True, 'stream_only': True}
+               for key, source in CHESS_STREAMS.items())
 
 # Explicit CLI/API opt-in only; excluded from the catalog and Import all.
 OPTIONAL_CHINESE = {'id': 'chinese-r1-en', 'repo': 'Congliu/Chinese-DeepSeek-R1-Distill-data-110k', 'label': 'R1 Distill · translated to English', 'kind': 'translated-sft', 'size': '~376 MB + 75 MB translator', 'license': 'Apache 2.0', 'note': 'Local translation of prompt, reasoning and answer; can take many hours'}
@@ -140,9 +144,11 @@ class HubImports:
             return {'catalog': catalog, 'jobs': json.loads(json.dumps(self.jobs)), 'active': bool(self.thread and self.thread.is_alive())}
 
     def start(self, key, max_records=0):
-        keys = list(dict.fromkeys(key)) if isinstance(key,list) else ([item['id'] for item in CATALOG] if key == 'all' else [key])
+        keys = list(dict.fromkeys(key)) if isinstance(key,list) else ([item['id'] for item in CATALOG if not item.get('stream_only')] if key == 'all' else [key])
         if not keys or any(k not in BY_ID for k in keys):
             raise ValueError('Choose datasets from the import catalog.')
+        if any(BY_ID[key].get('stream_only') for key in keys):
+            raise ValueError('Add these chess datasets with the Streaming option.')
         with self.lock:
             if self.thread and self.thread.is_alive():
                 raise ValueError('An import is already running. Pause it before starting another.')

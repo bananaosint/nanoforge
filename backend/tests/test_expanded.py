@@ -21,7 +21,7 @@ SMALL={'n_layer':1,'n_head':2,'n_embd':32,'block_size':32,'dropout':0}
 
 def test_catalog_selects_exact_requested_configs():
     sources={s['id']:s for s in CATALOG}
-    assert len(sources)==26
+    assert sum(not source.get('stream_only') for source in sources.values()) == 26
     assert sources['cosmopedia-v2']['config']=='cosmopedia-v2'
     assert sources['wikipedia-en']['config']=='20231101.en'
     assert sources['daily-dialog']['needs_access']

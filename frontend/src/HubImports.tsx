@@ -9,7 +9,7 @@ type Job = {
 }
 type CatalogSource = {
   id: string; repo: string; label: string; kind: string; size: string; license: string
-  note?: string; config?: string; massive?: boolean; streaming: boolean
+  note?: string; config?: string; massive?: boolean; stream_only?: boolean; streaming: boolean
 }
 type State = {active: boolean; catalog: CatalogSource[]; jobs: Record<string, Job>}
 type Access = 'stream' | 'local'
@@ -109,11 +109,12 @@ export default function HubImports({onComplete, onMix, mix}: {
           const cached = [job?.output, ...Object.keys(job?.previous_outputs || {})].filter((name): name is string => !!name)
           const inMix = !!mix[stream] || cached.some(name => !!mix[name])
           const open = expanded === source.id
-          const mode = access[source.id] ?? (mix[stream] || source.massive && source.streaming ? 'stream' : 'local')
+          const mode = source.stream_only ? 'stream'
+            : access[source.id] ?? (mix[stream] || source.massive && source.streaming ? 'stream' : 'local')
           return <article className="catalog-item" key={source.id}>
             <div className="catalog-summary">
               <input type="checkbox" aria-label={'Select ' + source.label + ' for download'} checked={queued.includes(source.id)}
-                disabled={locked || ready(job) || resumable(job)}
+                disabled={source.stream_only || locked || ready(job) || resumable(job)}
                 onChange={event => setSelected(previous => event.target.checked ? [...previous, source.id] : previous.filter(id => id !== source.id))}/>
               <button type="button" className="catalog-toggle" aria-expanded={open} onClick={() => setExpanded(open ? '' : source.id)}>
                 <span><strong>{source.label}</strong><small>{source.repo}{source.config ? ' · ' + source.config : ''}</small></span>
@@ -127,11 +128,13 @@ export default function HubImports({onComplete, onMix, mix}: {
               {source.note && <p>{source.note}</p>}
               <label className="field"><span>Access for {source.label}</span>
                 <select value={mode} onChange={event => setAccess(previous => ({...previous, [source.id]: event.target.value as Access}))}>
-                  <option value="local">Local cache</option><option value="stream" disabled={!source.streaming}>Streaming</option>
+                  {!source.stream_only && <option value="local">Local cache</option>}<option value="stream" disabled={!source.streaming}>Streaming</option>
                 </select>
               </label>
               {mode === 'stream' ? <>
-                <small>Reads from Hugging Face during training. Use Magic 8k or GPT-2 BPE. Download a local cache to use instruction or preference pairs.</small>
+                <small>Reads from Hugging Face during pretraining. Use Magic 8k or GPT-2 BPE. {source.stream_only
+                  ? 'Choose Chess Mode for completion training on this dataset.'
+                  : 'Download a local cache to use instruction or preference pairs.'}</small>
                 <button className="button primary small" disabled={!!mix[stream]} onClick={() => onMix(stream, cached)}>{mix[stream] ? 'Streaming in mix' : 'Add stream to mix'}</button>
               </> : <>
                 {!source.streaming && <small>This dataset requires Local cache.</small>}
